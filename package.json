@@ -1,11 +1,11 @@
 {
   "name": "@ericjuta/omp-cljs-codemode",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Add Squint ClojureScript cells to OMP's native codemode eval tool.",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git"
+    "url": "git+https://github.com/ericjuta/omp-cljs-codemode.git"
   },
   "private": true,
   "scripts": {

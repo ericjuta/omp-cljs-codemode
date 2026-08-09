@@ -1,10 +1,12 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_CASES = join(ROOT, "evals", "cases.json");
 const DEFAULT_BASELINE = join(ROOT, "evals", "baseline-v0.1.1.json");
+const DEFAULT_EXTENSION = join(ROOT, "index.ts");
 const RESULTS_ROOT = join(ROOT, "evals", "results");
 const PACKAGE_NAME = "@ericjuta/omp-cljs-codemode";
 const MAX_CASE_TIME_MS = 120_000;
@@ -42,6 +44,8 @@ type GuidanceSuite = {
 
 type BaselineCase = {
 	id: string;
+	prompt: string;
+	promptSha256: string;
 	finalText: string;
 	evalCallCount: number;
 	evalErrorCount: number;
@@ -85,6 +89,7 @@ type Collector = {
 
 type CaseResult = {
 	id: string;
+	promptSha256: string;
 	holdout: boolean;
 	evalCalls: SanitizedEvalCall[];
 	evalCallCount: number;
@@ -95,18 +100,31 @@ type CaseResult = {
 	timedOut: boolean;
 	passed: boolean;
 	failures: string[];
+	recordable: boolean;
 };
 
 type CliOptions = {
 	model?: string;
 	casesPath: string;
 	baselinePath: string;
+	extensionPath: string;
 	outputPath?: string;
+	recordBaselineVersion?: string;
 	help: boolean;
 };
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sha256(value: string): string {
+	return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function requireText(record: JsonRecord, key: string, context: string): string {
+	const value = record[key];
+	if (typeof value !== "string") throw new Error(`${context}.${key} must be a string`);
+	return value;
 }
 
 function requireString(record: JsonRecord, key: string, context: string): string {
@@ -221,9 +239,19 @@ function parseBaseline(value: unknown): Baseline {
 		const id = requireString(entry, "id", context);
 		if (ids.has(id)) throw new Error(`duplicate baseline case id: ${id}`);
 		ids.add(id);
+		const prompt = requireString(entry, "prompt", context);
+		const promptSha256 = requireString(entry, "promptSha256", context);
+		if (!/^[0-9a-f]{64}$/u.test(promptSha256)) {
+			throw new Error(`${context}.promptSha256 must be a lowercase SHA-256 digest`);
+		}
+		if (sha256(prompt) !== promptSha256) {
+			throw new Error(`${context}.promptSha256 does not match ${context}.prompt`);
+		}
 		return {
 			id,
-			finalText: requireString(entry, "finalText", context),
+			prompt,
+			promptSha256,
+			finalText: requireText(entry, "finalText", context),
 			evalCallCount: requireInteger(entry, "evalCallCount", context),
 			evalErrorCount: requireInteger(entry, "evalErrorCount", context),
 		};
@@ -268,6 +296,7 @@ function parseCli(argv: string[]): CliOptions {
 	const options: CliOptions = {
 		casesPath: DEFAULT_CASES,
 		baselinePath: DEFAULT_BASELINE,
+		extensionPath: DEFAULT_EXTENSION,
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index++) {
@@ -294,13 +323,30 @@ function parseCli(argv: string[]): CliOptions {
 			index = parsed.next;
 			continue;
 		}
+		parsed = readOption(argv, index, "--extension");
+		if (parsed) {
+			options.extensionPath = resolveInputPath(parsed.value);
+			index = parsed.next;
+			continue;
+		}
 		parsed = readOption(argv, index, "--output");
 		if (parsed) {
 			options.outputPath = resolveOutputPath(parsed.value);
 			index = parsed.next;
 			continue;
 		}
+		parsed = readOption(argv, index, "--record-baseline");
+		if (parsed) {
+			const version = parsed.value.trim();
+			if (version.length === 0) throw new Error("--record-baseline requires a non-empty version");
+			options.recordBaselineVersion = version;
+			index = parsed.next;
+			continue;
+		}
 		throw new Error(`unknown argument: ${arg}`);
+	}
+	if (!options.help && options.recordBaselineVersion !== undefined && !options.outputPath) {
+		throw new Error("--record-baseline requires --output");
 	}
 	return options;
 }
@@ -309,11 +355,13 @@ function printUsage(): void {
 	console.log(`Usage: bun scripts/eval-guidance.ts --model <provider/model> [options]
 
 Options:
-  --model <model>       Required unless CLJS_CODEMODE_EVAL_MODEL is set
-  --cases <path>        Case file (default: evals/cases.json)
-  --baseline <path>     Sanitized baseline (default: evals/baseline-v0.1.1.json)
-  --output <path>       Write sanitized results (repository paths must be under evals/results/)
-  -h, --help            Show this help`);
+  --model <model>             Required unless CLJS_CODEMODE_EVAL_MODEL is set
+  --cases <path>              Case file (default: evals/cases.json)
+  --baseline <path>           Sanitized baseline (default: evals/baseline-v0.1.1.json)
+  --extension <path>          Extension entry point (default: index.ts)
+  --output <path>             Write sanitized results (repository paths must be under evals/results/)
+  --record-baseline <version> Write a complete baseline to --output without comparing a prior baseline
+  -h, --help                  Show this help`);
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -529,7 +577,7 @@ function gradeCase(
 	return { passed: failures.length === 0, failures, calls };
 }
 
-async function runCase(testCase: GuidanceCase, model: string): Promise<CaseResult> {
+async function runCase(testCase: GuidanceCase, model: string, extensionPath: string): Promise<CaseResult> {
 	const fixture = await mkdtemp(join(tmpdir(), "omp-cljs-guidance-"));
 	const started = performance.now();
 	try {
@@ -548,7 +596,7 @@ async function runCase(testCase: GuidanceCase, model: string): Promise<CaseResul
 					"--auto-approve",
 					"--no-extensions",
 					"-e",
-					join(ROOT, "index.ts"),
+					extensionPath,
 					"--tools",
 					"eval",
 					"--model",
@@ -614,8 +662,16 @@ async function runCase(testCase: GuidanceCase, model: string): Promise<CaseResul
 			runtimeFailures.push(`failed to invoke omp: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const grade = gradeCase(testCase, collector, exitStatus, timedOut, runtimeFailures);
+		const recordable =
+			runtimeFailures.length === 0 &&
+			!timedOut &&
+			exitStatus === 0 &&
+			collector.parseErrors === 0 &&
+			collector.finalResponseSeen &&
+			collector.completedEvalCalls.size === collector.evalCalls.length;
 		return {
 			id: testCase.id,
+			promptSha256: sha256(testCase.prompt),
 			holdout: testCase.holdout,
 			evalCalls: grade.calls,
 			evalCallCount: grade.calls.length,
@@ -626,10 +682,50 @@ async function runCase(testCase: GuidanceCase, model: string): Promise<CaseResul
 			timedOut,
 			passed: grade.passed,
 			failures: grade.failures,
+			recordable,
 		};
 	} finally {
 		await rm(fixture, { recursive: true, force: true });
 	}
+}
+
+function assertBaselineCompatible(baseline: Baseline, suite: GuidanceSuite, model: string): void {
+	if (baseline.model !== model) {
+		throw new Error(`baseline model mismatch: expected ${baseline.model}, current model is ${model}`);
+	}
+	const suiteById = new Map(suite.cases.map(testCase => [testCase.id, testCase]));
+	const missing = baseline.cases.filter(entry => !suiteById.has(entry.id)).map(entry => entry.id);
+	if (missing.length > 0) throw new Error(`baseline cases missing from suite: ${missing.join(", ")}`);
+	const baselineIds = new Set(baseline.cases.map(entry => entry.id));
+	const unbaselined = suite.cases.filter(testCase => !baselineIds.has(testCase.id)).map(testCase => testCase.id);
+	if (unbaselined.length > 0) throw new Error(`suite cases missing from baseline: ${unbaselined.join(", ")}`);
+	for (const entry of baseline.cases) {
+		const testCase = suiteById.get(entry.id);
+		if (!testCase) continue;
+		if (entry.prompt !== testCase.prompt || entry.promptSha256 !== sha256(testCase.prompt)) {
+			throw new Error(`baseline prompt/hash drift for case ${entry.id}`);
+		}
+	}
+}
+
+function buildRecordedBaseline(version: string, model: string, suite: GuidanceSuite, results: CaseResult[]): Baseline {
+	const byId = new Map(results.map(result => [result.id, result]));
+	return {
+		version,
+		model,
+		cases: suite.cases.map(testCase => {
+			const result = byId.get(testCase.id);
+			if (!result) throw new Error(`missing result for case ${testCase.id}`);
+			return {
+				id: testCase.id,
+				prompt: testCase.prompt,
+				promptSha256: result.promptSha256,
+				finalText: result.finalResponse,
+				evalCallCount: result.evalCallCount,
+				evalErrorCount: result.evalErrorCount,
+			};
+		}),
+	};
 }
 
 function printBaselineComparison(baseline: Baseline, results: CaseResult[]): number {
@@ -666,14 +762,17 @@ async function main(): Promise<void> {
 	}
 	const model = (options.model ?? Bun.env.CLJS_CODEMODE_EVAL_MODEL)?.trim();
 	if (!model) throw new Error("an explicit model is required via --model or CLJS_CODEMODE_EVAL_MODEL");
-	const [suite, baseline] = await Promise.all([
-		readJson(options.casesPath).then(parseSuite),
-		readJson(options.baselinePath).then(parseBaseline),
-	]);
+	const extensionStat = await stat(options.extensionPath).catch(() => undefined);
+	if (!extensionStat?.isFile()) throw new Error(`extension entry point is not a file: ${options.extensionPath}`);
+	const suite = await readJson(options.casesPath).then(parseSuite);
+	const baseline = options.recordBaselineVersion === undefined
+		? await readJson(options.baselinePath).then(parseBaseline)
+		: undefined;
+	if (baseline) assertBaselineCompatible(baseline, suite, model);
 	const results: CaseResult[] = [];
 	console.log(`model ${model}; suite ${suite.suite}`);
 	for (const testCase of suite.cases) {
-		const result = await runCase(testCase, model);
+		const result = await runCase(testCase, model, options.extensionPath);
 		results.push(result);
 		console.log(
 			`${result.passed ? "PASS" : "FAIL"} ${result.id}${result.holdout ? " [holdout]" : ""} eval=${result.evalCallCount} errors=${result.evalErrorCount} time=${result.durationMs}ms`,
@@ -682,21 +781,34 @@ async function main(): Promise<void> {
 	}
 	const passed = results.filter(result => result.passed).length;
 	console.log(`summary ${passed}/${results.length} passed`);
-	const baselineOverlap = printBaselineComparison(baseline, results);
-	if (options.outputPath) {
+	if (options.recordBaselineVersion !== undefined) {
+		if (!options.outputPath) throw new Error("--record-baseline requires --output");
+		const unrecordable = results.filter(result => !result.recordable).map(result => result.id);
+		if (unrecordable.length > 0) {
+			throw new Error(`cannot record baseline after incomplete collection: ${unrecordable.join(", ")}`);
+		}
+		const artifact = buildRecordedBaseline(options.recordBaselineVersion, model, suite, results);
 		await mkdir(dirname(options.outputPath), { recursive: true });
-		const artifact = {
-			schemaVersion: 1,
-			suite: suite.suite,
-			model,
-			baseline: { version: baseline.version, model: baseline.model, overlap: baselineOverlap },
-			summary: { total: results.length, passed, failed: results.length - passed },
-			cases: results,
-		};
 		await Bun.write(options.outputPath, `${JSON.stringify(artifact, null, 2)}\n`);
 		console.log(`wrote ${options.outputPath}`);
+	} else {
+		if (!baseline) throw new Error("baseline is required outside record mode");
+		const baselineOverlap = printBaselineComparison(baseline, results);
+		if (options.outputPath) {
+			await mkdir(dirname(options.outputPath), { recursive: true });
+			const artifact = {
+				schemaVersion: 1,
+				suite: suite.suite,
+				model,
+				baseline: { version: baseline.version, model: baseline.model, overlap: baselineOverlap },
+				summary: { total: results.length, passed, failed: results.length - passed },
+				cases: results,
+			};
+			await Bun.write(options.outputPath, `${JSON.stringify(artifact, null, 2)}\n`);
+			console.log(`wrote ${options.outputPath}`);
+		}
 	}
-	if (passed !== results.length) process.exitCode = 1;
+	if (options.recordBaselineVersion === undefined && passed !== results.length) process.exitCode = 1;
 }
 
 await main().catch(error => {

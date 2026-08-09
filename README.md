@@ -18,33 +18,19 @@ The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.
 
 ## Install and operate
 
-The repository is private, so authenticate GitHub SSH first. OMP delegates Git dependency resolution to Bun 1.3.x, whose SSH resolver does not reliably accept tag names. Resolve the immutable tag with Git and pass its commit SHA to OMP:
+The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-release_commit="$(
-  git ls-remote git@github.com:ericjuta/omp-cljs-codemode.git \
-    'refs/tags/v0.1.2' 'refs/tags/v0.1.2^{}' |
-    tail -n 1 |
-    cut -f 1
-)"
-test -n "$release_commit" &&
-  omp plugin install "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git#$release_commit"
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.3'
 ```
 
-When upgrading from v0.1.1, run the same target install first. Never uninstall the working historical package before the new identity installs successfully:
+When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-release_commit="$(
-  git ls-remote git@github.com:ericjuta/omp-cljs-codemode.git \
-    'refs/tags/v0.1.2' 'refs/tags/v0.1.2^{}' |
-    tail -n 1 |
-    cut -f 1
-)"
-test -n "$release_commit" &&
-  omp plugin install "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git#$release_commit"
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.3'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.2`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.3`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -143,45 +129,40 @@ bun run check
 bun test
 ```
 
-Run the deterministic guidance suite with an explicit model (the environment variable is equivalent):
+Run the guidance suite with an explicit model (the environment variable is equivalent):
 
 ```sh
 bun run eval:guidance --model provider/model \
   --baseline evals/baseline-v0.1.1.json \
-  --output evals/results/candidate-v0.1.2.json
+  --output evals/results/candidate-v0.1.3.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```
 
-The runner prints per-case grades and baseline deltas. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads this checkout explicitly with only top-level `eval`. Optional result files contain only sanitized eval arguments/results, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.
+Record a historical checkout against the exact current case prompts with `--extension` and `--record-baseline`:
+
+```sh
+bun run eval:guidance --model provider/model \
+  --extension /path/to/v0.1.1/index.ts \
+  --record-baseline 0.1.1 \
+  --output /tmp/baseline-v0.1.1.json
+```
+
+Recorded baselines persist each prompt and its SHA-256 digest. Normal comparisons fail closed before model execution when the model, case IDs, prompt text, or prompt hashes differ. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads the selected checkout explicitly with only top-level `eval`. Optional result files contain only sanitized eval arguments/results, prompt hashes, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.
 
 ## Update and rollback
 
-There is no separate Git-plugin update command. Resolve the new tag and re-run install with its commit:
+There is no separate Git-plugin update command. Re-run install with the desired immutable public tag:
 
 ```sh
 tag=vX.Y.Z
-release_commit="$(
-  git ls-remote git@github.com:ericjuta/omp-cljs-codemode.git \
-    "refs/tags/$tag" "refs/tags/$tag^{}" |
-    tail -n 1 |
-    cut -f 1
-)"
-test -n "$release_commit" &&
-  omp plugin install "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git#$release_commit"
+omp plugin install "git+https://github.com/ericjuta/omp-cljs-codemode.git#$tag"
 ```
 
-To roll back across the v0.1.2 package-scope cutover, resolve and install v0.1.1 under its historical scope first:
+To roll back across the v0.1.2 package-scope cutover, install v0.1.1 under its historical scope first:
 
 ```sh
-rollback_commit="$(
-  git ls-remote git@github.com:ericjuta/omp-cljs-codemode.git \
-    'refs/tags/v0.1.1' 'refs/tags/v0.1.1^{}' |
-    tail -n 1 |
-    cut -f 1
-)"
-test -n "$rollback_commit" &&
-  omp plugin install "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git#$rollback_commit"
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.1'
 ```
 
 After the old package installs, run `omp plugin list`. It must show `@t-y-b-b/omp-cljs-codemode@0.1.1`. If the current identity is still listed, remove it only now, then ensure the historical package is enabled:

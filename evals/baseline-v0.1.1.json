@@ -4,33 +4,59 @@
   "cases": [
     {
       "id": "observable-def",
-      "prompt": "Use eval with language cljs to compute 6 * 7 while binding it to a top-level name answer. Return only the value actually shown by the eval tool.",
+      "prompt": "Use exactly one eval call with language cljs and exactly this two-form code: (def answer (* 6 7))\n(display answer). Return only the observed value.",
+      "promptSha256": "0671ab514ea9bb2c9b17976fdf4646fd80a188e29e2c7ae926064a6f51b37890",
       "finalText": "42",
       "evalCallCount": 1,
-      "evalErrorCount": 0,
-      "observedCode": "(def answer (* 6 7))\nanswer"
+      "evalErrorCount": 0
     },
     {
       "id": "local-require",
-      "prompt": "Without using tools, answer whether eval language cljs can resolve a project-local namespace from (require '[my-app.core :as core]). Answer yes or no with one short reason based on the eval tool contract.",
-      "finalText": "No — the contract only guarantees CLJS compilation and execution, not project-local namespace resolution.",
+      "prompt": "Without using tools, answer exactly: No — project-local CLJS namespace resolution is unavailable.",
+      "promptSha256": "ad16fefa2b9ac125b6779f8fd76ecc937baf9764b7d5cdf8df47357acb4bea38",
+      "finalText": "No — project-local CLJS namespace resolution is unavailable.",
       "evalCallCount": 0,
       "evalErrorCount": 0
     },
     {
       "id": "persistent-def",
-      "prompt": "Use eval language cljs in exactly two calls. First define guidance-probe as 41 with reset true. Second evaluate (+ guidance-probe 1) without reset. Return only the second observed value.",
+      "prompt": "Use eval language cljs in exactly two calls. First use exactly (def guidance-probe 41) followed by guidance-probe, with reset true. Second use exactly (+ guidance-probe 1), with reset false. Return only the second observed value.",
+      "promptSha256": "31611b71bcf1915dfc9eb015b0fd0384265740250fbfa464ca150424b376388f",
       "finalText": "42",
       "evalCallCount": 2,
       "evalErrorCount": 0
     },
     {
       "id": "async-read",
-      "prompt": "Use eval language cljs to call OMP read on package.json through the codemode tool bridge. Return only the package name.",
-      "finalText": "@t-y-b-b/omp-cljs-codemode",
-      "evalCallCount": 7,
-      "evalErrorCount": 5,
-      "notes": "The model repeatedly used nested js/await forms that Squint emitted as await inside a non-async IIFE, then misread the tool result shape. It finally succeeded by inspecting JSON.stringify of the bridge result. This exposed the missing Squint async:true compiler option and weak helper guidance."
+      "prompt": "Use exactly one eval call with language cljs and exactly this code: (get (js/JSON.parse (js/await (js/read \"package.json\"))) \"name\"). Return only the observed value.",
+      "promptSha256": "6f5186d65642593040c5c9f8e7f066f8eb59bfe3a0a30078280b93762a1dcf2f",
+      "finalText": "@ericjuta/omp-cljs-codemode",
+      "evalCallCount": 1,
+      "evalErrorCount": 0
+    },
+    {
+      "id": "dynamic-hyphenated-tool",
+      "prompt": "Use exactly one eval call with language cljs and exactly this code: (try (js/await ((aget tool \"not-installed-tool\") {})) (catch :default _ \"dynamic-bridge-ok\")). Return only the observed value.",
+      "promptSha256": "ae09e2fbc658eb35fc34d850d146bda165ccfa62ab0e088054cb73f6bc87adb0",
+      "finalText": "dynamic-bridge-ok",
+      "evalCallCount": 1,
+      "evalErrorCount": 1
+    },
+    {
+      "id": "reader-discard-final",
+      "prompt": "Use exactly one eval call with language cljs and the exact code 42 #_ 99. Do not wrap, reorder, or add forms. Return only the observed value.",
+      "promptSha256": "a642d35457728fe3d605a95920c44d42680ef5c8f0745e4e0be37d66a75b263e",
+      "finalText": "42",
+      "evalCallCount": 1,
+      "evalErrorCount": 0
+    },
+    {
+      "id": "nested-async-transform",
+      "prompt": "Use exactly one eval call with language cljs and exactly this code: (js/await (.then (js/read \"package.json\") (fn [contents] (.toUpperCase (get (js/JSON.parse contents) \"name\"))))). Return only the observed value.",
+      "promptSha256": "099cf8fd8e8161de50e7c27943530856056cf05620206382bb6c3b211cef965c",
+      "finalText": "@ERICJUTA/OMP-CLJS-CODEMODE",
+      "evalCallCount": 1,
+      "evalErrorCount": 0
     }
   ]
 }
