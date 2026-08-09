@@ -1,0 +1,36 @@
+{
+  "version": "0.1.1",
+  "model": "codex-lb/gpt-5.6-sol",
+  "cases": [
+    {
+      "id": "observable-def",
+      "prompt": "Use eval with language cljs to compute 6 * 7 while binding it to a top-level name answer. Return only the value actually shown by the eval tool.",
+      "finalText": "42",
+      "evalCallCount": 1,
+      "evalErrorCount": 0,
+      "observedCode": "(def answer (* 6 7))\nanswer"
+    },
+    {
+      "id": "local-require",
+      "prompt": "Without using tools, answer whether eval language cljs can resolve a project-local namespace from (require '[my-app.core :as core]). Answer yes or no with one short reason based on the eval tool contract.",
+      "finalText": "No — the contract only guarantees CLJS compilation and execution, not project-local namespace resolution.",
+      "evalCallCount": 0,
+      "evalErrorCount": 0
+    },
+    {
+      "id": "persistent-def",
+      "prompt": "Use eval language cljs in exactly two calls. First define guidance-probe as 41 with reset true. Second evaluate (+ guidance-probe 1) without reset. Return only the second observed value.",
+      "finalText": "42",
+      "evalCallCount": 2,
+      "evalErrorCount": 0
+    },
+    {
+      "id": "async-read",
+      "prompt": "Use eval language cljs to call OMP read on package.json through the codemode tool bridge. Return only the package name.",
+      "finalText": "@t-y-b-b/omp-cljs-codemode",
+      "evalCallCount": 7,
+      "evalErrorCount": 5,
+      "notes": "The model repeatedly used nested js/await forms that Squint emitted as await inside a non-async IIFE, then misread the tool result shape. It finally succeeded by inspecting JSON.stringify of the bridge result. This exposed the missing Squint async:true compiler option and weak helper guidance."
+    }
+  ]
+}

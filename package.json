@@ -1,11 +1,16 @@
 {
-  "name": "@t-y-b-b/omp-cljs-codemode",
-  "version": "0.1.1",
+  "name": "@ericjuta/omp-cljs-codemode",
+  "version": "0.1.2",
   "description": "Add Squint ClojureScript cells to OMP's native codemode eval tool.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/ericjuta/omp-cljs-codemode.git"
+  },
   "private": true,
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
+    "eval:guidance": "bun scripts/eval-guidance.ts",
     "test": "bun test"
   },
   "dependencies": {

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@t-y-b-b/omp-cljs-codemode",
+      "name": "@ericjuta/omp-cljs-codemode",
       "dependencies": {
         "squint-cljs": "0.8.159",
       },
