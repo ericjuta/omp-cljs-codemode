@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["bun", "node"]
   },
-  "include": ["index.ts", "index.test.ts", "squint-cljs.d.ts"]
+  "include": ["index.ts", "index.test.ts", "scripts/**/*.ts", "squint-cljs.d.ts"]
 }

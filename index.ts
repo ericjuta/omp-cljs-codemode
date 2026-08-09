@@ -1,8 +1,6 @@
-import { compileString } from "squint-cljs";
+import { compileStringEx, type CompileStringExResult } from "squint-cljs";
 
-const NATIVE_LANGUAGES = ["py", "js", "rb", "jl"] as const;
-const LANGUAGES = [...NATIVE_LANGUAGES, "cljs"] as const;
-type Language = (typeof LANGUAGES)[number];
+type Language = "cljs";
 
 type TypeBox = {
 	Type: {
@@ -11,7 +9,6 @@ type TypeBox = {
 		Number(options?: Record<string, unknown>): unknown;
 		Boolean(options?: Record<string, unknown>): unknown;
 		Literal(value: string): unknown;
-		Union(items: unknown[], options?: Record<string, unknown>): unknown;
 		Optional(schema: unknown): unknown;
 	};
 };
@@ -23,7 +20,7 @@ type ToolContext = {
 	) => Promise<unknown>;
 };
 
-type ToolApi = {
+export type ToolApi = {
 	typebox: TypeBox;
 	registerTool(tool: Record<string, unknown>): void;
 };
@@ -36,26 +33,75 @@ type CljsEvalParams = {
 	reset?: boolean;
 };
 
-const CORE_IMPORT_RE = /(from\s+["'])squint-cljs\/core\.js(["'])/g;
+const CORE_IMPORT = "import * as squint_core from 'squint-cljs/core.js';\n";
+
+
+const CLJS_EXAMPLES = [
+	{ caption: "Bare expression", code: "(+ 1 2)" },
+	{ caption: "Define and display", code: "(def result (+ 1 2))\n(display result)" },
+	{ caption: "Async read and JSON parse", code: '(js/JSON.parse (js/await (js/read "package.json")))' },
+] as const;
+
+const CLJS_BOUNDARIES = [
+	"Write direct Squint forms; do not wrap a cell in Vite or JavaScript module scaffolding.",
+	"Every cell needs a final expression or display(...); a def alone has no visible output.",
+	"Use display(...) for visible intermediate output and output(...) to inspect prior tool output.",
+	"Top-level defs persist until reset: true; other cells can reuse them.",
+	"Compiler aliases and project-local CLJS require resolution are unavailable; do not use Clojure require for project-local modules.",
+	"Nested async is supported.",
+	'Prefer (js/await (js/read "package.json")).',
+	'For names not valid CLJS identifiers, use (js/await ((aget tool "tool-name") {:arg "value"})).',
+	"Multiple top-level forms execute in order; the final form supplies the cell result.",
+] as const;
 
 /**
- * Compile one model-provided Squint cell for OMP's JavaScript codemode backend.
- * Expression mode preserves the native eval tool's final-expression behavior;
- * export elision keeps top-level CLJS definitions valid in the script evaluator.
+ * Compile one complete cell through Squint's reader. Return context emits valid
+ * statements for every form and returns only the effective final form, while
+ * leaving top-level definitions in OMP's persistent JavaScript runtime.
  */
 export function compileCljs(source: string): string {
-	const compiled = compileString(source, {
-		context: "expr",
+	const compiled = compileStringEx(source, {
+		context: "return",
+		async: true,
 		"elide-exports": true,
 	});
-	return compiled.replace(CORE_IMPORT_RE, `$1${import.meta.resolve("squint-cljs/core.js")}$2`);
+	const imports = compiled.imports ?? "";
+	const coreImportIndex = imports.indexOf(CORE_IMPORT);
+	if (coreImportIndex < 0 || imports.indexOf(CORE_IMPORT, coreImportIndex + CORE_IMPORT.length) >= 0) {
+		throw new Error("Squint compiler did not emit exactly one expected static core import");
+	}
+	const original = `${compiled.pragmas ?? ""}${imports}${compiled.body ?? ""}${compiled.exports ?? ""}`;
+	if (original !== compiled.javascript) {
+		throw new Error("Squint compiler returned an unsupported output layout");
+	}
+	const runtimeCoreImport = `import * as squint_core from ${JSON.stringify(import.meta.resolve("squint-cljs/core.js"))};\n`;
+	const rewrittenImports =
+		imports.slice(0, coreImportIndex) + runtimeCoreImport + imports.slice(coreImportIndex + CORE_IMPORT.length);
+	return `${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`;
 }
 
 function languageSchema(typebox: TypeBox): unknown {
-	const literals = LANGUAGES.map(language => typebox.Type.Literal(language));
-	return typebox.Type.Union(literals, {
-		description: 'Execution language: "cljs" for Squint ClojureScript; native eval languages remain available unchanged.',
-	});
+	return typebox.Type.Literal("cljs");
+}
+
+function renderExampleCode(code: string): string {
+	return code.includes("\n") ? `\"\"\"${code}\"\"\"` : JSON.stringify(code);
+}
+
+
+
+function modelGuidance(): string {
+	const examples = CLJS_EXAMPLES.map(example =>
+		`# ${example.caption}\n<example>\neval(language="cljs", code=${renderExampleCode(example.code)})\n</example>`,
+	).join("\n");
+	return [
+		"Run one step of code in a persistent codemode runtime.",
+		'Only "cljs" is accepted. Squint ClojureScript is compiled to the hidden JavaScript eval runtime.',
+		"CLJS is compiled directly to JavaScript, so display(), read(), write(), env(), output(), tool, and async/await remain available.",
+		...CLJS_BOUNDARIES,
+		"The final CLJS expression uses the same result and error contract as JavaScript eval.",
+		`<examples>\n${examples}\n</examples>`,
+	].join("\n");
 }
 
 export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
@@ -71,14 +117,7 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 	return {
 		name: "eval",
 		label: "Eval",
-		description: [
-			"Run one step of code in a persistent codemode runtime.",
-			`Use ${JSON.stringify("cljs")} for Squint ClojureScript; native ${NATIVE_LANGUAGES.join(", ")} runtimes are delegated unchanged.`,
-			"CLJS is compiled to JavaScript and then executed by OMP's native eval backend, so display(), read(), write(), env(), output(), tool.<name>(args), and async/await remain available.",
-			"For CLJS tool calls, use JavaScript interop such as (js/await (.read tool {:path \"package.json\"})).",
-			"For tool names that are not valid CLJS identifiers, use ((aget tool \"tool-name\") {:arg value}) instead.",
-			"The final CLJS expression is returned using the same result and error contract as JavaScript eval.",
-		].join("\n"),
+		description: modelGuidance(),
 		parameters,
 		loadMode: "essential",
 		strict: true,
@@ -90,11 +129,11 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 			onUpdate: ((update: unknown) => void) | undefined,
 			ctx: ToolContext,
 		) => {
+			if (params.language !== "cljs") {
+				throw new Error(`CLJS eval only supports language "cljs"; received ${JSON.stringify(params.language)}`);
+			}
 			if (!ctx.invokeTool) {
 				throw new Error('CLJS codemode requires the native "eval" tool delegation context');
-			}
-			if (params.language !== "cljs") {
-				return await ctx.invokeTool(params as unknown as Record<string, unknown>, { signal, onUpdate });
 			}
 			const code = compileCljs(params.code);
 			return await ctx.invokeTool(
