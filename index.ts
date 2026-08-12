@@ -69,6 +69,61 @@ export const MISSING_NATIVE_EVAL_MESSAGE =
 
 export const AWAIT_IN_SYNC_DEFN_MESSAGE =
 	"js-await/js/await belongs in a top-level form, let, or ^:async defn. A sync defn cannot contain await.";
+function rewriteCompileError(message: string): string {
+	if (message.includes("EOF while reading, expected )")) {
+		return `CLJS reader error: ${message}. Check unmatched parentheses.`;
+	}
+	if (message.includes("EOF while reading, expected ]")) {
+		return `CLJS reader error: ${message}. Check unmatched brackets.`;
+	}
+	if (message.includes("EOF while reading, expected }")) {
+		return `CLJS reader error: ${message}. Check unmatched braces.`;
+	}
+	if (message.includes('EOF while reading, expected "')) {
+		return `CLJS reader error: ${message}. Close the string.`;
+	}
+	if (message.includes("EOF while reading")) {
+		return `CLJS reader error: ${message}. The form is incomplete.`;
+	}
+	if (message.startsWith("Unmatched delimiter:")) {
+		return `CLJS reader error: ${message}. Remove the extra closer.`;
+	}
+	if (message.includes("Map literals must contain an even number of forms")) {
+		return `CLJS reader error: ${message}. Map literals need key/value pairs.`;
+	}
+	if (message === "First argument to defn must be a symbol") {
+		return "CLJS compile error: defn needs a name symbol, as in (defn foo [x] x).";
+	}
+	if (message === "Parameter declaration missing") {
+		return "CLJS compile error: defn/fn needs a parameter vector, as in (defn foo [x] x).";
+	}
+	if (message.includes("is not ISeqable")) {
+		return `CLJS compile error: ${message}. Expected a vector or sequential form (let bindings, require spec).`;
+	}
+	if (message.startsWith("Invalid symbol:")) {
+		return `CLJS reader error: ${message || "invalid symbol"}. Check the reader token.`;
+	}
+	if (message.startsWith("Feature should be a keyword:")) {
+		return `CLJS reader error: ${message}. Reader conditionals need a keyword feature, as in #?(:cljs ...).`;
+	}
+	return message;
+}
+
+export function applyCompilerStateResult(
+	map: Map<string, unknown>,
+	key: string,
+	candidate: unknown,
+	reset: boolean,
+	result: unknown,
+): void {
+	const details =
+		result && typeof result === "object" && "details" in result
+			? (result as { details?: { isError?: unknown } }).details
+			: undefined;
+	if (reset) map.delete(key);
+	if (details?.isError !== true) map.set(key, candidate);
+}
+
 
 const CLJS_EXAMPLES = [
 	{ caption: "Bare expression", code: "(+ 1 2)" },
@@ -254,10 +309,7 @@ function compileString(source: string, compilerState: unknown): CompileStringExR
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (message.includes("EOF while reading")) {
-			throw new Error(`CLJS reader error: ${message}. Check unmatched parentheses.`);
-		}
-		throw error instanceof Error ? error : new Error(message);
+		throw new Error(rewriteCompileError(message));
 	}
 }
 
@@ -332,15 +384,18 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 				throw new Error(MISSING_NATIVE_EVAL_MESSAGE);
 			}
 			const key = sessionCompilerKey(ctx);
-			if (params.reset === true && key !== undefined) compilerStateBySession.delete(key);
+			const priorState = key === undefined ? undefined : compilerStateBySession.get(key);
 			const compiled = compileCljsCell(params.code, {
-				compilerState: key === undefined ? undefined : compilerStateBySession.get(key),
+				compilerState: params.reset === true ? undefined : priorState,
 			});
-			if (key !== undefined) compilerStateBySession.set(key, compiled.compilerState);
-			return await ctx.invokeTool(
+			const result = await ctx.invokeTool(
 				{ ...params, language: "js", code: compiled.code },
 				{ signal, onUpdate },
 			);
+			if (key !== undefined) {
+				applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, result);
+			}
+			return result;
 		},
 	};
 }

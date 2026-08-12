@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "typebox";
-import { AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
+import { applyCompilerStateResult, AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
 
 const fakePi = {
 	typebox: { Type },
@@ -107,6 +107,20 @@ describe("CLJS codemode plugin", () => {
 	it("reports unmatched parentheses as a reader error", () => {
 		expect(() => compileCljs("(")).toThrow(/CLJS reader error.*unmatched parentheses/);
 	});
+
+	it("rewrites common Squint reader and compile errors", () => {
+		expect(() => compileCljs(")")).toThrow(/Remove the extra closer/);
+		expect(() => compileCljs("[")).toThrow(/unmatched brackets/);
+		expect(() => compileCljs("{")).toThrow(/unmatched braces/);
+		expect(() => compileCljs('"hello')).toThrow(/Close the string/);
+		expect(() => compileCljs("'")).toThrow(/form is incomplete/);
+		expect(() => compileCljs("{:a}")).toThrow(/key\/value pairs/);
+		expect(() => compileCljs("(defn)")).toThrow(/defn needs a name symbol/);
+		expect(() => compileCljs("(defn foo)")).toThrow(/parameter vector/);
+		expect(() => compileCljs("(let x 1)")).toThrow(/vector or sequential form/);
+		expect(() => compileCljs("#?")).toThrow(/keyword feature/);
+	});
+
 
 
 	it("exposes only the strict CLJS language schema", () => {
@@ -360,6 +374,45 @@ describe("CLJS codemode plugin", () => {
 		expect(secondCalls).toHaveLength(1);
 		expect(String(firstCalls[2].code)).toContain("return (1) + (2)");
 	});
+
+	it("keeps prior compiler state when compile fails after reset", async () => {
+		const tool = createCljsEvalTool(fakePi);
+		const execute = tool.execute as (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: ((update: unknown) => void) | undefined,
+			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
+		) => Promise<unknown>;
+		const calls: Array<Record<string, unknown>> = [];
+		const ctx = {
+			invokeTool: async (params: Record<string, unknown>) => {
+				calls.push(params);
+				return { content: [] };
+			},
+			sessionManager: { getSessionId: () => "session-reset-fail" },
+		};
+		await execute("seed", { language: "cljs", code: "(require (quote [clojure.string :as str]))" }, undefined, undefined, ctx);
+		await expect(execute("bad-reset", { language: "cljs", code: "(", reset: true }, undefined, undefined, ctx)).rejects.toThrow(/unmatched parentheses/);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("applies compiler state only after a successful native result", () => {
+		const map = new Map<string, unknown>();
+		const prior = { kind: "prior" };
+		const candidate = { kind: "candidate" };
+		map.set("session", prior);
+		applyCompilerStateResult(map, "session", candidate, false, { details: { isError: true } });
+		expect(map.get("session")).toBe(prior);
+		applyCompilerStateResult(map, "session", candidate, true, { details: { isError: true } });
+		expect(map.has("session")).toBe(false);
+		map.set("session", prior);
+		applyCompilerStateResult(map, "session", candidate, false, { details: {} });
+		expect(map.get("session")).toBe(candidate);
+	});
+
+
+
 
 
 });
