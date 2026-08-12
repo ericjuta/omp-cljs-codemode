@@ -14,7 +14,7 @@ model eval call (language: "cljs")
   -> return the native eval result
 ```
 
-The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.2.12 or newer, native JavaScript must remain enabled as the hidden execution backend; it is not exposed as a model-selectable language by this plugin.
+The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.2.12 or newer, native JavaScript must remain enabled as the hidden execution backend; it is not exposed as a model-selectable language by this plugin. Unrestricted Task/scout sessions that omit native `eval` from their allowlist still receive this extension tool via OMP's extension always-include, but execution fails closed before compile. Restricted hosts (`restrictToolNames`) do not load registered extensions. The unavailable-backend error is terminal for `eval` in that session: use `read`, `grep`, `glob`, or `bash` instead of retrying.
 
 ## Install and operate
 
@@ -76,7 +76,9 @@ One tool call is one Squint cell:
 }
 ```
 
-The final CLJS expression follows native JavaScript eval semantics. `(display value)`, stdout, and stderr are captured by the native result contract; a cell with no visible value reports the native no-output result.
+The final CLJS expression follows native JavaScript eval semantics. `(display value)`, `(pr value)`, stdout, and stderr are captured by the native result contract; a cell with no visible value reports the native no-output result.
+
+Prefer a long-lived sequence of cljs cells over one-shot tools for multi-step work. Codemode is more effective long term than direct tools.
 
 Cells share OMP's retained JavaScript runtime within a session, so definitions survive later CLJS calls:
 
@@ -85,27 +87,31 @@ Cells share OMP's retained JavaScript runtime within a session, so definitions s
 {"language":"cljs","code":"(+ guidance-probe 1)"}
 ```
 
-`reset: true` recreates the shared JS/CLJS runtime before that cell and clears prior definitions. State ends when the owning OMP process/session runtime ends; it is not written into source files.
+`reset: true` recreates the shared JS/CLJS runtime before that cell and clears prior definitions. Experimental compiler `ns-state` is also scoped to the OMP session and cleared on reset. It is best-effort: later cells may use a previous require alias, but this plugin does not re-emit or resolve extra Squint imports. State ends when the owning OMP process/session runtime ends; it is not written into source files.
 
 ### Async helpers and tool bridge
 
-CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `env`, `output`, `tool`, `completion`, `agent`, `parallel`, and `pipeline`. JavaScript-facing filesystem and tool operations return promises, so await them through Squint interop:
+CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `env`, `output`, `tool`, `completion`, `agent`, `parallel`, and `pipeline`. JavaScript-facing filesystem and tool operations return promises, so await them with Squint's `js-await` (or `js/await`) special form:
 
 ```clojure
-(let [text (js/await (js/read "package.json"))]
+(let [text (js-await (js/read "package.json"))]
   (aget (js/JSON.parse text) "name"))
 ```
+
+Bare `await` is not that special form. Keep `js-await` in a top-level form, `let`, or `^:async defn`.
+
+`(pr value)` prints via `pr-str` and returns the value. `(js-await (sh "git status --short"))` calls the native bash tool. There is no `js/bash` helper; that form fails with that instruction.
 
 Call a registered tool through the proxy:
 
 ```clojure
-(js/await (.read tool {:path "package.json"}))
+(js-await (.read tool {:path "package.json"}))
 ```
 
 For a tool name that is not a valid CLJS identifier, use dynamic lookup:
 
 ```clojure
-(js/await ((aget tool "my-hyphenated-tool") {:arg "value"}))
+(js-await ((aget tool "my-hyphenated-tool") {:arg "value"}))
 ```
 
 Tool bridge calls preserve the native tool's permissions and side effects. Prefer `js/read(...)` when raw file text is sufficient; `tool.read(...)` returns the normal OMP tool response shape.

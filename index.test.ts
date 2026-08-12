@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "typebox";
-import { compileCljs, createCljsEvalTool } from "./index.js";
+import { AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
 
 const fakePi = {
 	typebox: { Type },
@@ -22,7 +22,7 @@ type EvalExecute = (
 	ctx: { invokeTool: InvokeTool },
 ) => Promise<unknown>;
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (body: string) => () => Promise<unknown>;
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => (...args: never[]) => Promise<unknown>;
 
 async function evaluateCljsCell(source: string): Promise<unknown> {
 	const code = compileCljs(source).replace(/^import .+;\n/gm, "");
@@ -104,9 +104,10 @@ describe("CLJS codemode plugin", () => {
 		expect(await evaluateCljsCell("42 #?(:cljs 7 :clj 8)")).toBe(7);
 	});
 
-	it("reports invalid CLJS as a compiler error", () => {
-		expect(() => compileCljs("(")).toThrow();
+	it("reports unmatched parentheses as a reader error", () => {
+		expect(() => compileCljs("(")).toThrow(/CLJS reader error.*unmatched parentheses/);
 	});
+
 
 	it("exposes only the strict CLJS language schema", () => {
 		const tool = createCljsEvalTool(fakePi);
@@ -142,7 +143,21 @@ describe("CLJS codemode plugin", () => {
 			ctx: Record<string, never>,
 		) => Promise<unknown>;
 		await expect(execute("missing-delegation", { language: "cljs", code: "(+ 1 2)" }, undefined, undefined, {})).rejects.toThrow(
-			'native "eval" tool delegation context',
+			MISSING_NATIVE_EVAL_MESSAGE,
+		);
+	});
+
+	it("does not compile when native eval delegation is unavailable", async () => {
+		const tool = createCljsEvalTool(fakePi);
+		const execute = tool.execute as (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: ((update: unknown) => void) | undefined,
+			ctx: Record<string, never>,
+		) => Promise<unknown>;
+		await expect(execute("do-not-compile", { language: "cljs", code: "(" }, undefined, undefined, {})).rejects.toThrow(
+			MISSING_NATIVE_EVAL_MESSAGE,
 		);
 	});
 
@@ -193,7 +208,8 @@ describe("CLJS codemode plugin", () => {
 		const examples = [
 			"(+ 1 2)",
 			"(def result (+ 1 2))\n(display result)",
-			'(js/JSON.parse (js/await (js/read "package.json")))',
+			'(js/JSON.parse (js-await (js/read "package.json")))',
+			'(js-await (sh "git status --short"))',
 		] as const;
 		expect(description).toContain("<examples>");
 		expect(description).toContain("</examples>");
@@ -207,16 +223,143 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("def alone has no visible output");
 		expect(description).toContain("Compiler aliases");
 		expect(description).toContain("project-local CLJS require resolution");
-		expect(description).toContain("Nested async is supported");
-		expect(description).toContain('(js/await (js/read "package.json"))');
-		expect(description).toContain('(js/await ((aget tool "tool-name") {:arg "value"}))');
+		expect(description).toContain("js-await");
+		expect(description).toContain("^:async defn");
+		expect(description).toContain("Codemode is more effective long term than direct tools");
+		expect(description).toContain('(js-await (js/read "package.json"))');
+		expect(description).toContain('(js-await ((aget tool "tool-name") {:arg "value"}))');
+		expect(description).toContain("There is no js/bash helper");
 		expect(description).toContain("Multiple top-level forms execute in order");
 		expect(description).toContain("output(...)");
+		expect(description).toContain("this tool cannot create one");
+		expect(description).toContain("Do not retry eval");
+		expect(description).toContain("Do not use eval to discover cwd");
+		expect(description).toContain("xd://report_issue");
+		expect(description).toContain("Experimental compiler ns-state");
 	});
 
-	it("compiles arbitrary dynamic tool names", () => {
-		const code = compileCljs('((aget tool "arbitrary-tool-name") {:arg 1})');
-		expect(code).toContain("arbitrary-tool-name");
+	it("injects pr, sh, and a bash diagnostic helper", async () => {
+		const displayed: unknown[] = [];
+		const bashCalls: unknown[] = [];
+		const squintCore = { pr_str: (value: unknown) => JSON.stringify(value) };
+		const run = new AsyncFunction(
+			"squint_core",
+			"display",
+			"tool",
+			compileCljs("(pr {:a 1})").replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: { pr_str: (value: unknown) => string },
+			display: (value: unknown) => void,
+			tool: { bash: (args: unknown) => Promise<string> },
+		) => Promise<unknown>;
+		const value = await run(
+			squintCore,
+			next => {
+				displayed.push(next);
+			},
+			{
+				bash: async args => {
+					bashCalls.push(args);
+					return "ok";
+				},
+			},
+		);
+		expect(value).toEqual({ a: 1 });
+		expect(displayed).toEqual(['{"a":1}']);
+		const runSh = new AsyncFunction(
+			"squint_core",
+			"display",
+			"tool",
+			compileCljs('(js-await (sh "git status --short"))').replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: { pr_str: (value: unknown) => string },
+			display: (value: unknown) => void,
+			tool: { bash: (args: unknown) => Promise<string> },
+		) => Promise<unknown>;
+		await expect(
+			runSh(squintCore, () => {}, {
+				bash: async args => {
+					bashCalls.push(args);
+					return "ok";
+				},
+			}),
+		).resolves.toBe("ok");
+		expect(bashCalls).toEqual([{ command: "git status --short" }]);
+		const runBash = new AsyncFunction(
+			compileCljs('(js/bash {:command "true"})').replace(/^import .+;\n/gm, ""),
+		) as () => Promise<unknown>;
+		await expect(runBash()).rejects.toThrow("There is no js/bash helper");
 	});
+
+
+
+	it("compiles js-await as the JavaScript await operator", () => {
+		const code = compileCljs("(js-await 1)");
+		expect(code).toContain("return (await 1)");
+		expect(code).not.toContain("await(1)");
+	});
+
+	it("rejects await inside a sync defn before delegation", () => {
+		expect(() => compileCljs("(defn sneak [path] (js/await (js/read path)))")).toThrow(AWAIT_IN_SYNC_DEFN_MESSAGE);
+		expect(() => compileCljs("(defn ^:async sneak [path] (js/await (js/read path)))\n(sneak \"x\")")).not.toThrow();
+	});
+
+	it("allows top-level js-await after a sync defn", () => {
+		const code = compileCljs("(defn f [] 1)\n(js-await (js/Promise.resolve 2))");
+		expect(code).toContain("return (await Promise.resolve(2))");
+	});
+
+	it("allows js-await inside a nested async fn of a sync defn", () => {
+		const code = compileCljs("(defn outer [] ((^:async fn [] (js-await 1))))");
+		expect(code).toContain("async function");
+		expect(code).toContain("return (await 1)");
+	});
+
+	it("rejects js-await inside a nested sync fn", () => {
+		expect(() => compileCljs("(defn ^:async outer [] ((fn [] (js-await 1))))")).toThrow(AWAIT_IN_SYNC_DEFN_MESSAGE);
+	});
+
+	it("returns experimental ns-state from a require cell", () => {
+		const first = compileCljsCell("(require (quote [clojure.string :as str]))");
+		expect(first.compilerState).toBeDefined();
+		const second = compileCljsCell('(str/upper-case "ab")', { compilerState: first.compilerState });
+		expect(second.code).toContain("str.upper_case");
+	});
+
+	it("scopes experimental compiler state to a session and clears it on reset", async () => {
+		const tool = createCljsEvalTool(fakePi);
+		const execute = tool.execute as (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: ((update: unknown) => void) | undefined,
+			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
+		) => Promise<unknown>;
+		const firstCalls: Array<Record<string, unknown>> = [];
+		const secondCalls: Array<Record<string, unknown>> = [];
+		const firstCtx = {
+			invokeTool: async (params: Record<string, unknown>) => {
+				firstCalls.push(params);
+				return { content: [] };
+			},
+			sessionManager: { getSessionId: () => "session-a" },
+		};
+		const secondCtx = {
+			invokeTool: async (params: Record<string, unknown>) => {
+				secondCalls.push(params);
+				return { content: [] };
+			},
+			sessionManager: { getSessionId: () => "session-b" },
+		};
+		await execute("one", { language: "cljs", code: "(require (quote [clojure.string :as str]))" }, undefined, undefined, firstCtx);
+		await execute("two", { language: "cljs", code: '(str/upper-case "ab")' }, undefined, undefined, firstCtx);
+		await execute("other", { language: "cljs", code: '(str/upper-case "ab")' }, undefined, undefined, secondCtx);
+		await execute("reset", { language: "cljs", code: "(+ 1 2)", reset: true }, undefined, undefined, firstCtx);
+		expect(firstCalls).toHaveLength(3);
+		expect(String(firstCalls[1].code)).toContain("str.upper_case");
+		expect(secondCalls).toHaveLength(1);
+		expect(String(firstCalls[2].code)).toContain("return (1) + (2)");
+	});
+
 
 });
