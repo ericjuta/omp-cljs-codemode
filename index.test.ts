@@ -397,6 +397,27 @@ describe("CLJS codemode plugin", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	it("rethrows a thrown native reset", async () => {
+		const tool = createCljsEvalTool(fakePi);
+		const execute = tool.execute as (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: ((update: unknown) => void) | undefined,
+			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
+		) => Promise<unknown>;
+		const ctx = {
+			invokeTool: async () => {
+				throw new Error("native eval threw");
+			},
+			sessionManager: { getSessionId: () => "session-thrown-reset" },
+		};
+		await expect(execute("reset-throw", { language: "cljs", code: "(+ 1 2)", reset: true }, undefined, undefined, ctx)).rejects.toThrow(
+			"native eval threw",
+		);
+	});
+
+
 	it("applies compiler state only after a successful native result", () => {
 		const map = new Map<string, unknown>();
 		const prior = { kind: "prior" };
@@ -409,6 +430,11 @@ describe("CLJS codemode plugin", () => {
 		map.set("session", prior);
 		applyCompilerStateResult(map, "session", candidate, false, { details: {} });
 		expect(map.get("session")).toBe(candidate);
+		map.set("session", prior);
+		applyCompilerStateResult(map, "session", candidate, false, undefined, true);
+		expect(map.get("session")).toBe(prior);
+		applyCompilerStateResult(map, "session", candidate, true, undefined, true);
+		expect(map.has("session")).toBe(false);
 	});
 
 

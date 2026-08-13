@@ -115,13 +115,19 @@ export function applyCompilerStateResult(
 	candidate: unknown,
 	reset: boolean,
 	result: unknown,
+	threw = false,
 ): void {
+	if (threw) {
+		if (reset) map.delete(key);
+		return;
+	}
 	const details =
-		result && typeof result === "object" && "details" in result
-			? (result as { details?: { isError?: unknown } }).details
+		result && typeof result === "object" && "details" in result && result.details && typeof result.details === "object"
+			? result.details
 			: undefined;
+	const isError = details !== undefined && "isError" in details && details.isError === true;
 	if (reset) map.delete(key);
-	if (details?.isError !== true) map.set(key, candidate);
+	if (!isError) map.set(key, candidate);
 }
 
 
@@ -388,14 +394,21 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 			const compiled = compileCljsCell(params.code, {
 				compilerState: params.reset === true ? undefined : priorState,
 			});
-			const result = await ctx.invokeTool(
-				{ ...params, language: "js", code: compiled.code },
-				{ signal, onUpdate },
-			);
-			if (key !== undefined) {
-				applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, result);
+			try {
+				const result = await ctx.invokeTool(
+					{ ...params, language: "js", code: compiled.code },
+					{ signal, onUpdate },
+				);
+				if (key !== undefined) {
+					applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, result);
+				}
+				return result;
+			} catch (error) {
+				if (key !== undefined) {
+					applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, undefined, true);
+				}
+				throw error;
 			}
-			return result;
 		},
 	};
 }
