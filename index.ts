@@ -50,10 +50,61 @@ export type CompileCljsCell = {
 
 const CORE_IMPORT = "import * as squint_core from 'squint-cljs/core.js';\n";
 
-const PRELUDE = `function pr(value) {
-	const text = typeof squint_core !== "undefined" && typeof squint_core.pr_str === "function" ? squint_core.pr_str(value) : String(value);
+export const ENV_HELPER_MESSAGE =
+	"Host environment is not available through eval helpers. Do not dump environment from a cell.";
+
+const PRELUDE = `const CLJS_PRINT_LENGTH = 32;
+const CLJS_PRINT_DEPTH = 4;
+function cljsPrint(value, depth, seen) {
+	if (value === null || value === undefined) return "nil";
+	if (typeof value === "boolean") return String(value);
+	if (typeof value === "number") {
+		if (Number.isNaN(value)) return "##NaN";
+		if (value === Infinity) return "##Inf";
+		if (value === -Infinity) return "##-Inf";
+		return String(value);
+	}
+	if (typeof value === "bigint") return String(value) + "N";
+	if (typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "function") return "#function";
+	if (typeof value === "symbol") return String(value);
+	if (depth <= 0) return "...";
+	if (typeof value !== "object") return String(value);
+	if (seen.has(value)) return "#circular";
+	seen.add(value);
+	try {
+		const ctor = value.constructor && value.constructor.name;
+		if (value instanceof Set) {
+			const xs = Array.from(value);
+			const more = xs.length > CLJS_PRINT_LENGTH;
+			const body = xs.slice(0, CLJS_PRINT_LENGTH).map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
+			return "#{" + body + (more ? " ..." : "") + "}";
+		}
+		const sequential = Array.isArray(value) || ctor === "List" || ctor === "LazySeq" || ctor === "Cons";
+		if (sequential) {
+			const xs = Array.from(value);
+			const more = xs.length > CLJS_PRINT_LENGTH;
+			const body = xs.slice(0, CLJS_PRINT_LENGTH).map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
+			const open = ctor === "List" || ctor === "LazySeq" || ctor === "Cons" ? "(" : "[";
+			const close = open === "(" ? ")" : "]";
+			return open + body + (more ? " ..." : "") + close;
+		}
+		const keys = Object.keys(value);
+		const more = keys.length > CLJS_PRINT_LENGTH;
+		const body = keys.slice(0, CLJS_PRINT_LENGTH).map((key) => {
+			const ident = /^[A-Za-z*+!_'?<>=/][A-Za-z0-9*+!_'?<>=/-]*$/.test(key) || key.includes("/");
+			const printedKey = ident ? ":" + key : JSON.stringify(key);
+			return printedKey + " " + cljsPrint(value[key], depth - 1, seen);
+		}).join(" ");
+		return "{" + body + (more ? " ..." : "") + "}";
+	} finally {
+		seen.delete(value);
+	}
+}
+function pr(...values) {
+	const text = values.map((value) => cljsPrint(value, CLJS_PRINT_DEPTH, new Set())).join(" ");
 	display(text);
-	return value;
+	return values.length <= 1 ? values[0] : values[values.length - 1];
 }
 async function sh(cmd) {
 	const args = typeof cmd === "string" ? { command: cmd } : cmd;
@@ -61,6 +112,9 @@ async function sh(cmd) {
 }
 function bash() {
 	throw new Error("There is no js/bash helper. Use (js-await (sh \\"command\\")) or the native bash tool.");
+}
+function env() {
+	throw new Error(${JSON.stringify(ENV_HELPER_MESSAGE)});
 }
 `;
 
@@ -148,11 +202,12 @@ const CLJS_BOUNDARIES = [
 	"Compiler aliases and project-local CLJS require resolution are unavailable; do not use Clojure require for project-local modules.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
 	'Prefer (js-await (js/read "package.json")).',
-	'(pr value) prints via pr-str. (js-await (sh "git status")) calls the bash tool. There is no js/bash helper.',
+	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
 	'For names not valid CLJS identifiers, use (js-await ((aget tool "tool-name") {:arg "value"})).',
 	"Multiple top-level forms execute in order; the final form supplies the cell result.",
 	"If eval reports that the native backend is unavailable, stop. Do not retry eval. Use read, grep, glob, or bash.",
 	"Do not use eval to discover cwd, env, or tool names, and do not write xd://report_issue from a cell.",
+	"Do not expose host environment from a cell, including through delegated tools.",
 ] as const;
 
 const compilerStateBySession = new Map<string, unknown>();
@@ -351,7 +406,7 @@ function modelGuidance(): string {
 		"Run one step of code in a persistent codemode runtime.",
 		'Only "cljs" is accepted. Squint ClojureScript is compiled to the hidden JavaScript eval runtime.',
 		"The hidden JavaScript backend must already be present; this tool cannot create one.",
-		"CLJS is compiled directly to JavaScript, so display(), read(), write(), env(), output(), tool, and async/await remain available.",
+		"CLJS is compiled directly to JavaScript, so display(), read(), write(), output(), tool, and async/await remain available.",
 		...CLJS_BOUNDARIES,
 		"The final CLJS expression uses the same result and error contract as JavaScript eval.",
 		`<examples>\n${examples}\n</examples>`,

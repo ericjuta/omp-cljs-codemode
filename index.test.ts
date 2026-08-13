@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "typebox";
-import { applyCompilerStateResult, AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
+import { applyCompilerStateResult, AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, ENV_HELPER_MESSAGE, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
 
 const fakePi = {
 	typebox: { Type },
@@ -250,6 +250,13 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("Do not use eval to discover cwd");
 		expect(description).toContain("xd://report_issue");
 		expect(description).toContain("Experimental compiler ns-state");
+		expect(description).toContain('host bash tool via tool["bash"]');
+		expect(description).toContain("truncated CLJS-shaped view");
+		expect(description).toContain("There is no env helper");
+		expect(description).toContain("Do not expose host environment from a cell");
+		expect(description).not.toContain("write(), env(), output()");
+		expect(description).not.toContain("process.env");
+		expect(description).not.toContain("Bun.env");
 	});
 
 	it("injects pr, sh, and a bash diagnostic helper", async () => {
@@ -279,7 +286,7 @@ describe("CLJS codemode plugin", () => {
 			},
 		);
 		expect(value).toEqual({ a: 1 });
-		expect(displayed).toEqual(['{"a":1}']);
+		expect(displayed).toEqual(["{:a 1}"]);
 		const runSh = new AsyncFunction(
 			"squint_core",
 			"display",
@@ -303,6 +310,28 @@ describe("CLJS codemode plugin", () => {
 			compileCljs('(js/bash {:command "true"})').replace(/^import .+;\n/gm, ""),
 		) as () => Promise<unknown>;
 		await expect(runBash()).rejects.toThrow("There is no js/bash helper");
+		const runEnv = new AsyncFunction(
+			compileCljs("(js/env)").replace(/^import .+;\n/gm, ""),
+		) as () => Promise<unknown>;
+		await expect(runEnv()).rejects.toThrow(ENV_HELPER_MESSAGE);
+	});
+
+	it("prints truncated CLJS-shaped values from pr", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs("(pr {:a 1} #{1 2} (fn [] 1) [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32])").replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toHaveLength(1);
+		const text = String(displayed[0]);
+		expect(text).toContain("{:a 1}");
+		expect(text).toMatch(/#\{[12] [12]\}/);
+		expect(text).toContain("#function");
+		expect(text).toContain(" ...]");
+		expect(text).not.toContain(" 32]");
 	});
 
 

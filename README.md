@@ -21,16 +21,16 @@ The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.
 The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.6'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.7'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.6'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.7'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.6`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.7`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -91,7 +91,7 @@ Cells share OMP's retained JavaScript runtime within a session, so definitions s
 
 ### Async helpers and tool bridge
 
-CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `env`, `output`, `tool`, `completion`, `agent`, `parallel`, and `pipeline`. JavaScript-facing filesystem and tool operations return promises, so await them with Squint's `js-await` (or `js/await`) special form:
+CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `output`, `tool`, `completion`, `agent`, `parallel`, and `pipeline`. JavaScript-facing filesystem and tool operations return promises, so await them with Squint's `js-await` (or `js/await`) special form:
 
 ```clojure
 (let [text (js-await (js/read "package.json"))]
@@ -100,7 +100,9 @@ CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `
 
 Bare `await` is not that special form. Keep `js-await` in a top-level form, `let`, or `^:async defn`.
 
-`(pr value)` prints via `pr-str` and returns the value. `(js-await (sh "git status --short"))` calls the native bash tool. There is no `js/bash` helper; that form fails with that instruction.
+`(pr value)` prints a truncated CLJS-shaped view (sets, lists, functions, circular values) and returns the value. `(js-await (sh "git status --short"))` calls the native bash tool through the host tool proxy (`tool["bash"]`); it is not a subprocess of the JS worker. There is no `js/bash` helper; that form fails with that instruction. There is no `env` helper; that form fails closed without dumping host environment.
+
+Cells inherit the native JS eval worker's environment (`process.env` / `Bun.env`). Sanitizing that worker env does not cover `sh` or other delegated tools. Do not dump process env from a cell.
 
 Call a registered tool through the proxy:
 
@@ -140,7 +142,7 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 ```sh
 bun run eval:guidance --model provider/model \
   --baseline evals/baseline-v0.1.1.json \
-  --output evals/results/candidate-v0.1.6.json
+  --output evals/results/candidate-v0.1.7.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```
