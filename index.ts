@@ -55,6 +55,27 @@ export const ENV_HELPER_MESSAGE =
 
 const PRELUDE = `const CLJS_PRINT_LENGTH = 32;
 const CLJS_PRINT_DEPTH = 4;
+function cljsTake(value, limit) {
+	const xs = [];
+	if (Array.isArray(value)) {
+		return { xs: value.slice(0, limit), more: value.length > limit };
+	}
+	const iterator = value && typeof value[Symbol.iterator] === "function" ? value[Symbol.iterator]() : null;
+	if (!iterator || typeof iterator.next !== "function") return { xs, more: false };
+	try {
+		while (xs.length < limit) {
+			const step = iterator.next();
+			if (!step || step.done) return { xs, more: false };
+			xs.push(step.value);
+		}
+		const extra = iterator.next();
+		return { xs, more: Boolean(extra) && extra.done !== true };
+	} finally {
+		if (typeof iterator.return === "function") {
+			try { iterator.return(); } catch (ignored) {}
+		}
+	}
+}
 function cljsPrint(value, depth, seen) {
 	if (value === null || value === undefined) return "nil";
 	if (typeof value === "boolean") return String(value);
@@ -75,19 +96,19 @@ function cljsPrint(value, depth, seen) {
 	try {
 		const ctor = value.constructor && value.constructor.name;
 		if (value instanceof Set) {
-			const xs = Array.from(value);
-			const more = xs.length > CLJS_PRINT_LENGTH;
-			const body = xs.slice(0, CLJS_PRINT_LENGTH).map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
-			return "#{" + body + (more ? " ..." : "") + "}";
+			const taken = cljsTake(value, CLJS_PRINT_LENGTH);
+			const body = taken.xs.map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
+			return "#{" + body + (taken.more ? " ..." : "") + "}";
 		}
-		const sequential = Array.isArray(value) || ctor === "List" || ctor === "LazySeq" || ctor === "Cons";
+		const listLike = ctor === "List" || ctor === "LazySeq" || ctor === "Cons" || ctor === "LazyIterable";
+		const iterableSeq = typeof value[Symbol.iterator] === "function" && ctor !== "Object" && !(value instanceof Map);
+		const sequential = Array.isArray(value) || listLike || iterableSeq;
 		if (sequential) {
-			const xs = Array.from(value);
-			const more = xs.length > CLJS_PRINT_LENGTH;
-			const body = xs.slice(0, CLJS_PRINT_LENGTH).map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
-			const open = ctor === "List" || ctor === "LazySeq" || ctor === "Cons" ? "(" : "[";
+			const taken = cljsTake(value, CLJS_PRINT_LENGTH);
+			const body = taken.xs.map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
+			const open = Array.isArray(value) ? "[" : "(";
 			const close = open === "(" ? ")" : "]";
-			return open + body + (more ? " ..." : "") + close;
+			return open + body + (taken.more ? " ..." : "") + close;
 		}
 		const keys = Object.keys(value);
 		const more = keys.length > CLJS_PRINT_LENGTH;

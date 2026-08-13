@@ -334,6 +334,47 @@ describe("CLJS codemode plugin", () => {
 		expect(text).not.toContain(" 32]");
 	});
 
+	it("prints a bounded prefix of an infinite LazySeq without Array.from", async () => {
+		const displayed: unknown[] = [];
+		const originalFrom = Array.from;
+		const unbounded: string[] = [];
+		Array.from = ((value: unknown, ...rest: unknown[]) => {
+			const ctor = value && typeof value === "object" ? (value as { constructor?: { name?: string } }).constructor?.name : undefined;
+			if (ctor === "LazySeq" || ctor === "Cons" || ctor === "LazyIterable") {
+				unbounded.push(String(ctor));
+				throw new Error(`unbounded Array.from on ${ctor}`);
+			}
+			return originalFrom.apply(Array, [value, ...rest] as Parameters<typeof Array.from>);
+		}) as typeof Array.from;
+		try {
+			const run = new AsyncFunction(
+				"squint_core",
+				"display",
+				compileCljs("(pr (iterate inc 0))").replace(/^import .+;\n/gm, ""),
+			) as (
+				squintCore: Record<string, unknown>,
+				display: (value: unknown) => void,
+			) => Promise<unknown>;
+			const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+			await Promise.race([
+				run(squintCore, next => {
+					displayed.push(next);
+				}),
+				new Promise((_, reject) => {
+					setTimeout(() => reject(new Error("infinite LazySeq print timed out")), 1000);
+				}),
+			]);
+		} finally {
+			Array.from = originalFrom;
+		}
+		expect(unbounded).toEqual([]);
+		expect(displayed).toHaveLength(1);
+		const text = String(displayed[0]);
+		expect(text.startsWith("(0 1 2 ")).toBe(true);
+		expect(text).toContain(" ...");
+		expect(text).not.toContain(" 32)");
+	});
+
 
 
 	it("compiles js-await as the JavaScript await operator", () => {

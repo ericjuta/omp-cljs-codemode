@@ -15,3 +15,5 @@ declare module "squint-cljs" {
     state?: Record<string, unknown>,
   ): CompileStringExResult;
 }
+
+declare module "squint-cljs/core.js";
