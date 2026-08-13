@@ -334,6 +334,23 @@ describe("CLJS codemode plugin", () => {
 		expect(text).not.toContain(" 32]");
 	});
 
+	it("prints lists with parens and does not call Squint List.map", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"squint_core",
+			"display",
+			compileCljs("(pr (list) (list 1 2 3) [] [1 2 3] (cons 1 (list 2)))").replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: Record<string, unknown>,
+			display: (value: unknown) => void,
+		) => Promise<unknown>;
+		const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+		await run(squintCore, next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["() (1 2 3) [] [1 2 3] (1 2)"]);
+	});
+
 	it("prints a bounded prefix of an infinite LazySeq without Array.from", async () => {
 		const displayed: unknown[] = [];
 		const originalFrom = Array.from;

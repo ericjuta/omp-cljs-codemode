@@ -57,7 +57,7 @@ const PRELUDE = `const CLJS_PRINT_LENGTH = 32;
 const CLJS_PRINT_DEPTH = 4;
 function cljsTake(value, limit) {
 	const xs = [];
-	if (Array.isArray(value)) {
+	if (Array.isArray(value) && value.constructor === Array) {
 		return { xs: value.slice(0, limit), more: value.length > limit };
 	}
 	const iterator = value && typeof value[Symbol.iterator] === "function" ? value[Symbol.iterator]() : null;
@@ -101,12 +101,13 @@ function cljsPrint(value, depth, seen) {
 			return "#{" + body + (taken.more ? " ..." : "") + "}";
 		}
 		const listLike = ctor === "List" || ctor === "LazySeq" || ctor === "Cons" || ctor === "LazyIterable";
+		const trueArray = Array.isArray(value) && value.constructor === Array;
 		const iterableSeq = typeof value[Symbol.iterator] === "function" && ctor !== "Object" && !(value instanceof Map);
-		const sequential = Array.isArray(value) || listLike || iterableSeq;
+		const sequential = trueArray || listLike || iterableSeq;
 		if (sequential) {
 			const taken = cljsTake(value, CLJS_PRINT_LENGTH);
 			const body = taken.xs.map((item) => cljsPrint(item, depth - 1, seen)).join(" ");
-			const open = Array.isArray(value) ? "[" : "(";
+			const open = trueArray ? "[" : "(";
 			const close = open === "(" ? ")" : "]";
 			return open + body + (taken.more ? " ..." : "") + close;
 		}
