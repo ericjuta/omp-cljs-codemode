@@ -89,12 +89,40 @@ function cljsPrint(value, depth, seen) {
 	if (typeof value === "string") return JSON.stringify(value);
 	if (typeof value === "function") return "#function";
 	if (typeof value === "symbol") return String(value);
-	if (depth <= 0) return "...";
+	if (value instanceof Date) return '#inst "' + value.toISOString() + '"';
+	if (value instanceof RegExp) return "#" + String(value);
 	if (typeof value !== "object") return String(value);
+	if (depth <= 0) return "...";
 	if (seen.has(value)) return "#circular";
 	seen.add(value);
 	try {
 		const ctor = value.constructor && value.constructor.name;
+		if (ctor === "Atom") {
+			return "#atom " + cljsPrint(value.val, depth - 1, seen);
+		}
+		if (ctor === "Reduced") {
+			return "#reduced " + cljsPrint(value.value, depth - 1, seen);
+		}
+		if (ctor === "ExceptionInfo" || value instanceof Error) {
+			const parts = [":message " + JSON.stringify(value.message || "")];
+			if (value._data !== undefined) parts.push(":data " + cljsPrint(value._data, depth - 1, seen));
+			if (value._cause !== undefined && value._cause !== null) parts.push(":cause " + cljsPrint(value._cause, depth - 1, seen));
+			return "#error {" + parts.join(" ") + "}";
+		}
+		if (value instanceof Map) {
+			const taken = cljsTake(value, CLJS_PRINT_LENGTH);
+			const body = taken.xs.map((entry) => {
+				const pair = Array.isArray(entry) ? entry : [undefined, undefined];
+				return cljsPrint(pair[0], depth - 1, seen) + " " + cljsPrint(pair[1], depth - 1, seen);
+			}).join(", ");
+			return "#js/Map {" + body + (taken.more ? " ..." : "") + "}";
+		}
+		if (ArrayBuffer.isView(value)) {
+			const bytes = Array.prototype.slice.call(value, 0, CLJS_PRINT_LENGTH);
+			const more = value.length > CLJS_PRINT_LENGTH;
+			const tag = value.constructor && value.constructor.name ? value.constructor.name : "TypedArray";
+			return "#" + tag + " [" + bytes.join(" ") + (more ? " ..." : "") + "]";
+		}
 		if (value instanceof Set) {
 			const taken = cljsTake(value, CLJS_PRINT_LENGTH);
 			const body = taken.xs.map((item) => cljsPrint(item, depth - 1, seen)).join(" ");

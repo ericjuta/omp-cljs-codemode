@@ -334,6 +334,18 @@ describe("CLJS codemode plugin", () => {
 		expect(text).not.toContain(" 32]");
 	});
 
+	it("truncates nested objects at CLJS_PRINT_DEPTH", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs("(pr {:a {:b {:c {:d {:e 1}}}}})").replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["{:a {:b {:c {:d ...}}}}"]);
+	});
+
 	it("prints lists with parens and does not call Squint List.map", async () => {
 		const displayed: unknown[] = [];
 		const run = new AsyncFunction(
@@ -392,7 +404,67 @@ describe("CLJS codemode plugin", () => {
 		expect(text).not.toContain(" 32)");
 	});
 
+	it("prints atoms reduced errors dates maps and bytes without leaking internals", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"squint_core",
+			"display",
+			compileCljs("(pr (atom {:n 1}) (reduced 3) (js/Date. 0) (js/Map. #js [#js [\"a\" 1]]) (js/Uint8Array. #js [1 2 3]))").replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: Record<string, unknown>,
+			display: (value: unknown) => void,
+		) => Promise<unknown>;
+		const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+		await run(squintCore, next => {
+			displayed.push(next);
+		});
+		expect(displayed).toHaveLength(1);
+		const text = String(displayed[0]);
+		expect(text).toContain("#atom {:n 1}");
+		expect(text).not.toContain("_watches");
+		expect(text).not.toContain("_reset_BANG_");
+		expect(text).toContain("#reduced 3");
+		expect(text).toContain('#inst "1970-01-01T00:00:00.000Z"');
+		expect(text).toContain('#js/Map {"a" 1}');
+		expect(text).toContain("#Uint8Array [1 2 3]");
+	});
 
+	it("prints ExceptionInfo and Error as keyed #error maps", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"squint_core",
+			"display",
+			compileCljs("(pr (ex-info \"boom\" {:k 1}))\n(pr (js/Error. \"boom\"))").replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: Record<string, unknown>,
+			display: (value: unknown) => void,
+		) => Promise<unknown>;
+		const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+		await run(squintCore, next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual([
+			'#error {:message "boom" :data {:k 1}}',
+			'#error {:message "boom"}',
+		]);
+	});
+
+	it("prints Squint keywords as strings because they compile to strings", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"squint_core",
+			"display",
+			compileCljs("(pr :hello/world #{:a :b} [:a :b] (list :a))").replace(/^import .+;\n/gm, ""),
+		) as (
+			squintCore: Record<string, unknown>,
+			display: (value: unknown) => void,
+		) => Promise<unknown>;
+		const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+		await run(squintCore, next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(['"hello/world" #{"a" "b"} ["a" "b"] ("a")']);
+	});
 
 	it("compiles js-await as the JavaScript await operator", () => {
 		const code = compileCljs("(js-await 1)");
