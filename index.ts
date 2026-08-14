@@ -243,13 +243,12 @@ const CLJS_EXAMPLES = [
 ] as const;
 
 const CLJS_BOUNDARIES = [
-	"Prefer long-lived cljs cells over one-shot tools for multi-step work. Codemode is more effective long term than direct tools.",
 	"Write direct Squint forms; do not wrap a cell in Vite or JavaScript module scaffolding.",
 	"Every cell needs a final expression or display(...)/pr(...); a def alone has no visible output.",
 	"Use display(...) or pr(...) for visible intermediate output and output(...) to inspect prior tool output.",
 	"Top-level defs persist until reset: true; other cells can reuse them.",
 	"Experimental compiler ns-state also persists until reset: true. It is best-effort and may not re-emit requires.",
-	"Compiler aliases and project-local CLJS require resolution are unavailable; do not use Clojure require for project-local modules.",
+	"Project-local CLJS require and path resolution are unavailable; do not use Clojure require for project-local modules. Session :as aliases from a prior cell may persist until reset: true.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
 	'Prefer (js-await (js/read "package.json")).',
 	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',

@@ -21,16 +21,16 @@ The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.
 The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.10'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.11'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.10'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.11'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.10`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.11`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -40,6 +40,8 @@ omp plugin uninstall @t-y-b-b/omp-cljs-codemode
 A failed target install leaves the historical package working. The final list must not contain `@t-y-b-b/omp-cljs-codemode`.
 
 The installed package name is `@ericjuta/omp-cljs-codemode`.
+
+This install also ships the packaged `omp-cljs-codemode-operate` skill. OMP discovers it from the enabled plugin, so do not copy `SKILL.md` into a user or project skill directory. Start a new OMP process after installation or enablement so the tool and skill are loaded.
 
 Disable or re-enable the whole plugin for subsequent OMP processes:
 
@@ -77,8 +79,6 @@ One tool call is one Squint cell:
 ```
 
 The final CLJS expression follows native JavaScript eval semantics. `(display value)`, `(pr value)`, stdout, and stderr are captured by the native result contract; a cell with no visible value reports the native no-output result.
-
-Prefer a long-lived sequence of cljs cells over one-shot tools for multi-step work. Codemode is more effective long term than direct tools.
 
 Cells share OMP's retained JavaScript runtime within a session, so definitions survive later CLJS calls:
 
@@ -142,7 +142,7 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 ```sh
 bun run eval:guidance --model provider/model \
   --baseline evals/baseline-v0.1.1.json \
-  --output evals/results/candidate-v0.1.10.json
+  --output evals/results/candidate-v0.1.11.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```

@@ -235,11 +235,12 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("Vite");
 		expect(description).toContain("final expression or display");
 		expect(description).toContain("def alone has no visible output");
-		expect(description).toContain("Compiler aliases");
-		expect(description).toContain("project-local CLJS require resolution");
+		expect(description).toContain("Project-local CLJS require and path resolution are unavailable");
+		expect(description).toContain("Session :as aliases from a prior cell may persist until reset: true");
 		expect(description).toContain("js-await");
 		expect(description).toContain("^:async defn");
-		expect(description).toContain("Codemode is more effective long term than direct tools");
+		expect(description).not.toContain("Codemode is more effective long term than direct tools");
+		expect(description).not.toContain("Prefer long-lived cljs cells");
 		expect(description).toContain('(js-await (js/read "package.json"))');
 		expect(description).toContain('(js-await ((aget tool "tool-name") {:arg "value"}))');
 		expect(description).toContain("There is no js/bash helper");
