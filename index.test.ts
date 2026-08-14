@@ -222,7 +222,7 @@ describe("CLJS codemode plugin", () => {
 		const examples = [
 			"(+ 1 2)",
 			"(def result (+ 1 2))\n(display result)",
-			'(js/JSON.parse (js-await (js/read "package.json")))',
+			"(js-await (js/Promise.resolve 3))",
 			'(js-await (sh "git status --short"))',
 		] as const;
 		expect(description).toContain("<examples>");
@@ -241,7 +241,9 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("^:async defn");
 		expect(description).not.toContain("Codemode is more effective long term than direct tools");
 		expect(description).not.toContain("Prefer long-lived cljs cells");
-		expect(description).toContain('(js-await (js/read "package.json"))');
+		expect(description).not.toContain('Prefer (js-await (js/read "package.json"))');
+		expect(description).not.toContain('(js/read "package.json")');
+		expect(description).toContain("(js-await (js/Promise.resolve 3))");
 		expect(description).toContain('(js-await ((aget tool "tool-name") {:arg "value"}))');
 		expect(description).toContain("There is no js/bash helper");
 		expect(description).toContain("Multiple top-level forms execute in order");

@@ -238,7 +238,7 @@ export function applyCompilerStateResult(
 const CLJS_EXAMPLES = [
 	{ caption: "Bare expression", code: "(+ 1 2)" },
 	{ caption: "Define and display", code: "(def result (+ 1 2))\n(display result)" },
-	{ caption: "Async read and JSON parse", code: '(js/JSON.parse (js-await (js/read "package.json")))' },
+	{ caption: "js-await a promise", code: "(js-await (js/Promise.resolve 3))" },
 	{ caption: "Shell via sh", code: '(js-await (sh "git status --short"))' },
 ] as const;
 
@@ -250,7 +250,6 @@ const CLJS_BOUNDARIES = [
 	"Experimental compiler ns-state also persists until reset: true. It is best-effort and may not re-emit requires.",
 	"Project-local CLJS require and path resolution are unavailable; do not use Clojure require for project-local modules. Session :as aliases from a prior cell may persist until reset: true.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
-	'Prefer (js-await (js/read "package.json")).',
 	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
 	'For names not valid CLJS identifiers, use (js-await ((aget tool "tool-name") {:arg "value"})).',
 	"Multiple top-level forms execute in order; the final form supplies the cell result.",
