@@ -21,16 +21,16 @@ The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.
 The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.13'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.13'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.13`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.14`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -87,7 +87,7 @@ Cells share OMP's retained JavaScript runtime within a session, so definitions s
 {"language":"cljs","code":"(+ guidance-probe 1)"}
 ```
 
-`reset: true` recreates the shared JS/CLJS runtime before that cell and clears prior definitions. Experimental compiler `ns-state` is also scoped to the OMP session and cleared on reset. It is best-effort: later cells may use a previous require alias, but this plugin does not re-emit or resolve extra Squint imports. State ends when the owning OMP process/session runtime ends; it is not written into source files.
+`reset: true` recreates the shared JS/CLJS runtime before that cell and clears prior definitions. Session `:as` aliases persist because the JS worker keeps the import binding. Prefer `str/replace` after `:as str`; do not `:refer` `replace` and call it bare. State ends when the owning OMP process/session runtime ends; it is not written into source files.
 
 ### Async helpers and tool bridge
 
@@ -142,7 +142,7 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 ```sh
 bun run eval:guidance --model provider/model \
   --baseline evals/baseline-v0.1.1.json \
-  --output evals/results/candidate-v0.1.13.json
+  --output evals/results/candidate-v0.1.14.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```

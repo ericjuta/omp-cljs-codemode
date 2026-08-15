@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "typebox";
-import { applyCompilerStateResult, AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, compileCljsCell, createCljsEvalTool, ENV_HELPER_MESSAGE, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
+import { AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, createCljsEvalTool, ENV_HELPER_MESSAGE, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
 
 const fakePi = {
 	typebox: { Type },
@@ -252,7 +252,8 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("Do not retry eval");
 		expect(description).toContain("Do not use eval to discover cwd");
 		expect(description).toContain("xd://report_issue");
-		expect(description).toContain("Experimental compiler ns-state");
+		expect(description).toContain("Prefer str/replace after :as str");
+		expect(description).not.toContain("Experimental compiler ns-state");
 		expect(description).toContain('host bash tool via tool["bash"]');
 		expect(description).toContain("truncated CLJS-shaped view");
 		expect(description).toContain("There is no env helper");
@@ -495,68 +496,14 @@ describe("CLJS codemode plugin", () => {
 		expect(() => compileCljs("(defn ^:async outer [] ((fn [] (js-await 1))))")).toThrow(AWAIT_IN_SYNC_DEFN_MESSAGE);
 	});
 
-	it("returns experimental ns-state from a require cell", () => {
-		const first = compileCljsCell("(require (quote [clojure.string :as str]))");
-		expect(first.compilerState).toBeDefined();
-		const second = compileCljsCell('(str/upper-case "ab")', { compilerState: first.compilerState });
-		expect(second.code).toContain("str.upper_case");
+	it("compiles str/replace without compiler ns-state", () => {
+		const code = compileCljs('(str/replace "aa" "a" "b")');
+		expect(code).toContain("str.replace");
+		expect(code).not.toContain("squint_core.replace");
 	});
 
-	it("scopes experimental compiler state to a session and clears it on reset", async () => {
-		const tool = createCljsEvalTool(fakePi);
-		const execute = tool.execute as (
-			toolCallId: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal | undefined,
-			onUpdate: ((update: unknown) => void) | undefined,
-			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
-		) => Promise<unknown>;
-		const firstCalls: Array<Record<string, unknown>> = [];
-		const secondCalls: Array<Record<string, unknown>> = [];
-		const firstCtx = {
-			invokeTool: async (params: Record<string, unknown>) => {
-				firstCalls.push(params);
-				return { content: [] };
-			},
-			sessionManager: { getSessionId: () => "session-a" },
-		};
-		const secondCtx = {
-			invokeTool: async (params: Record<string, unknown>) => {
-				secondCalls.push(params);
-				return { content: [] };
-			},
-			sessionManager: { getSessionId: () => "session-b" },
-		};
-		await execute("one", { language: "cljs", code: "(require (quote [clojure.string :as str]))" }, undefined, undefined, firstCtx);
-		await execute("two", { language: "cljs", code: '(str/upper-case "ab")' }, undefined, undefined, firstCtx);
-		await execute("other", { language: "cljs", code: '(str/upper-case "ab")' }, undefined, undefined, secondCtx);
-		await execute("reset", { language: "cljs", code: "(+ 1 2)", reset: true }, undefined, undefined, firstCtx);
-		expect(firstCalls).toHaveLength(3);
-		expect(String(firstCalls[1].code)).toContain("str.upper_case");
-		expect(secondCalls).toHaveLength(1);
-		expect(String(firstCalls[2].code)).toContain("return (1) + (2)");
-	});
-
-	it("keeps prior compiler state when compile fails after reset", async () => {
-		const tool = createCljsEvalTool(fakePi);
-		const execute = tool.execute as (
-			toolCallId: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal | undefined,
-			onUpdate: ((update: unknown) => void) | undefined,
-			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
-		) => Promise<unknown>;
-		const calls: Array<Record<string, unknown>> = [];
-		const ctx = {
-			invokeTool: async (params: Record<string, unknown>) => {
-				calls.push(params);
-				return { content: [] };
-			},
-			sessionManager: { getSessionId: () => "session-reset-fail" },
-		};
-		await execute("seed", { language: "cljs", code: "(require (quote [clojure.string :as str]))" }, undefined, undefined, ctx);
-		await expect(execute("bad-reset", { language: "cljs", code: "(", reset: true }, undefined, undefined, ctx)).rejects.toThrow(/unmatched parentheses/);
-		expect(calls).toHaveLength(1);
+	it("compiles bare replace to squint_core.replace", () => {
+		expect(compileCljs('(replace "aa" "a" "b")')).toContain("squint_core.replace");
 	});
 
 	it("rethrows a thrown native reset", async () => {
@@ -566,41 +513,15 @@ describe("CLJS codemode plugin", () => {
 			params: Record<string, unknown>,
 			signal: AbortSignal | undefined,
 			onUpdate: ((update: unknown) => void) | undefined,
-			ctx: { invokeTool: InvokeTool; sessionManager: { getSessionId: () => string } },
+			ctx: { invokeTool: InvokeTool },
 		) => Promise<unknown>;
 		const ctx = {
 			invokeTool: async () => {
 				throw new Error("native eval threw");
 			},
-			sessionManager: { getSessionId: () => "session-thrown-reset" },
 		};
 		await expect(execute("reset-throw", { language: "cljs", code: "(+ 1 2)", reset: true }, undefined, undefined, ctx)).rejects.toThrow(
 			"native eval threw",
 		);
 	});
-
-
-	it("applies compiler state only after a successful native result", () => {
-		const map = new Map<string, unknown>();
-		const prior = { kind: "prior" };
-		const candidate = { kind: "candidate" };
-		map.set("session", prior);
-		applyCompilerStateResult(map, "session", candidate, false, { details: { isError: true } });
-		expect(map.get("session")).toBe(prior);
-		applyCompilerStateResult(map, "session", candidate, true, { details: { isError: true } });
-		expect(map.has("session")).toBe(false);
-		map.set("session", prior);
-		applyCompilerStateResult(map, "session", candidate, false, { details: {} });
-		expect(map.get("session")).toBe(candidate);
-		map.set("session", prior);
-		applyCompilerStateResult(map, "session", candidate, false, undefined, true);
-		expect(map.get("session")).toBe(prior);
-		applyCompilerStateResult(map, "session", candidate, true, undefined, true);
-		expect(map.has("session")).toBe(false);
-	});
-
-
-
-
-
 });

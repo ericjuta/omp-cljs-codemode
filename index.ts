@@ -13,17 +13,11 @@ type TypeBox = {
 	};
 };
 
-type SessionManager = {
-	getSessionFile?: () => string | undefined;
-	getSessionId?: () => string | undefined;
-};
-
 type ToolContext = {
 	invokeTool?: (
 		params: Record<string, unknown>,
 		options?: { signal?: AbortSignal; onUpdate?: (update: unknown) => void },
 	) => Promise<unknown>;
-	sessionManager?: SessionManager;
 };
 
 export type ToolApi = {
@@ -37,15 +31,6 @@ type CljsEvalParams = {
 	title?: string;
 	timeout?: number;
 	reset?: boolean;
-};
-
-export type CompileCljsOptions = {
-	compilerState?: unknown;
-};
-
-export type CompileCljsCell = {
-	code: string;
-	compilerState: unknown;
 };
 
 const CORE_IMPORT = "import * as squint_core from 'squint-cljs/core.js';\n";
@@ -213,28 +198,6 @@ function rewriteCompileError(message: string): string {
 	return message;
 }
 
-export function applyCompilerStateResult(
-	map: Map<string, unknown>,
-	key: string,
-	candidate: unknown,
-	reset: boolean,
-	result: unknown,
-	threw = false,
-): void {
-	if (threw) {
-		if (reset) map.delete(key);
-		return;
-	}
-	const details =
-		result && typeof result === "object" && "details" in result && result.details && typeof result.details === "object"
-			? result.details
-			: undefined;
-	const isError = details !== undefined && "isError" in details && details.isError === true;
-	if (reset) map.delete(key);
-	if (!isError) map.set(key, candidate);
-}
-
-
 const CLJS_EXAMPLES = [
 	{ caption: "Bare expression", code: "(+ 1 2)" },
 	{ caption: "Define and display", code: "(def result (+ 1 2))\n(display result)" },
@@ -247,7 +210,7 @@ const CLJS_BOUNDARIES = [
 	"Every cell needs a final expression or display(...)/pr(...); a def alone has no visible output.",
 	"Use display(...) or pr(...) for visible intermediate output and output(...) to inspect prior tool output.",
 	"Top-level defs persist until reset: true; other cells can reuse them.",
-	"Experimental compiler ns-state also persists until reset: true. It is best-effort and may not re-emit requires.",
+	"Prefer str/replace after :as str. Do not :refer replace and call it bare.",
 	"Project-local CLJS require and path resolution are unavailable; do not use Clojure require for project-local modules. Session :as aliases from a prior cell may persist until reset: true.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
 	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
@@ -257,16 +220,6 @@ const CLJS_BOUNDARIES = [
 	"Do not use eval to discover cwd, env, or tool names, and do not write xd://report_issue from a cell.",
 	"Do not expose host environment from a cell, including through delegated tools.",
 ] as const;
-
-const compilerStateBySession = new Map<string, unknown>();
-
-function sessionCompilerKey(ctx: ToolContext): string | undefined {
-	const file = ctx.sessionManager?.getSessionFile?.();
-	if (typeof file === "string" && file.length > 0) return `file:${file}`;
-	const id = ctx.sessionManager?.getSessionId?.();
-	if (typeof id === "string" && id.length > 0) return `id:${id}`;
-	return undefined;
-}
 
 function splitLeadingImports(source: string): { header: string; rest: string } {
 	const lines = source.split(/(?<=\n)/);
@@ -405,17 +358,13 @@ function assertNoAwaitInSyncFn(javascript: string): void {
 	assertAwaitScope(javascript, 0, javascript.length, true);
 }
 
-function compileString(source: string, compilerState: unknown): CompileStringExResult {
+function compileString(source: string): CompileStringExResult {
 	try {
-		return compileStringEx(
-			source,
-			{
-				context: "return",
-				async: true,
-				"elide-exports": true,
-			},
-			compilerState === undefined ? undefined : { "ns-state": compilerState },
-		);
+		return compileStringEx(source, {
+			context: "return",
+			async: true,
+			"elide-exports": true,
+		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(rewriteCompileError(message));
@@ -427,15 +376,11 @@ function compileString(source: string, compilerState: unknown): CompileStringExR
  * statements for every form and returns only the effective final form, while
  * leaving top-level definitions in OMP's persistent JavaScript runtime.
  */
-export function compileCljsCell(source: string, options: CompileCljsOptions = {}): CompileCljsCell {
-	const compiled = compileString(source, options.compilerState);
+export function compileCljs(source: string): string {
+	const compiled = compileString(source);
 	const rewritten = rewriteCoreImport(compiled);
 	assertNoAwaitInSyncFn(rewritten);
-	return { code: injectPrelude(rewritten), compilerState: compiled["ns-state"] };
-}
-
-export function compileCljs(source: string, options: CompileCljsOptions = {}): string {
-	return compileCljsCell(source, options).code;
+	return injectPrelude(rewritten);
 }
 
 function languageSchema(typebox: TypeBox): unknown {
@@ -492,26 +437,8 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 			if (!ctx.invokeTool) {
 				throw new Error(MISSING_NATIVE_EVAL_MESSAGE);
 			}
-			const key = sessionCompilerKey(ctx);
-			const priorState = key === undefined ? undefined : compilerStateBySession.get(key);
-			const compiled = compileCljsCell(params.code, {
-				compilerState: params.reset === true ? undefined : priorState,
-			});
-			try {
-				const result = await ctx.invokeTool(
-					{ ...params, language: "js", code: compiled.code },
-					{ signal, onUpdate },
-				);
-				if (key !== undefined) {
-					applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, result);
-				}
-				return result;
-			} catch (error) {
-				if (key !== undefined) {
-					applyCompilerStateResult(compilerStateBySession, key, compiled.compilerState, params.reset === true, undefined, true);
-				}
-				throw error;
-			}
+			const code = compileCljs(params.code);
+			return await ctx.invokeTool({ ...params, language: "js", code }, { signal, onUpdate });
 		},
 	};
 }

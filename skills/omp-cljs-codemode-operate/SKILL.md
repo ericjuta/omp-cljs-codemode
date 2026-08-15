@@ -20,10 +20,10 @@ Checkout tests and `bun run check` are not live proof.
 Current public install:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.13'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
 ```
 
-`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.13`. Then start a new OMP process.
+`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.14`. Then start a new OMP process.
 
 ## Wrapper contract
 
@@ -39,7 +39,7 @@ Do **not**:
 
 Scout allows only `read, grep, glob, web_search`. On unrestricted sessions the SDK still auto-includes extension tools, so cljs `eval` can appear without a JS backend. Restricted hosts (`restrictToolNames`) do not load registered extensions.
 
-First-cell `reset: true` remains valid for persistence setup. Experimental compiler `ns-state` is scoped to the OMP session. Commit it only after a successful native result (`details.isError` is not true). A failed `reset: true` still deletes prior compiler state because native reset already ran.
+First-cell `reset: true` remains valid for persistence setup. Prefer `str/replace` after `:as str`.
 
 ## Diagnose unavailable backend
 
@@ -68,7 +68,7 @@ omp --no-session --mode json --auto-approve --tools eval --model "$CLJS_CODEMODE
 
 Quote completed `eval` tool texts, not the child model's summary.
 
-Expected printer lines on 0.1.13:
+Expected printer lines on 0.1.14:
 
 - `() (1 2 3) [] [1 2 3] (1 2)`
 - `#atom {:n 1}`
@@ -98,4 +98,4 @@ Match prior cuts: one `release public CLJS codemode vX.Y.Z` commit, annotated ta
 
 ## Proof
 
-`bun test` in the plugin repo covers the missing-`invokeTool` path, prelude helpers, diagnostics, and `applyCompilerStateResult` keep/delete/store. The installed plugin is a separate identity; `omp plugin link .` or reinstall is required before a live session sees checkout changes.
+`bun test` in the plugin repo covers the missing-`invokeTool` path, prelude helpers, and diagnostics. The installed plugin is a separate identity; `omp plugin link .` or reinstall is required before a live session sees checkout changes.
