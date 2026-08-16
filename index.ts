@@ -154,7 +154,7 @@ function env() {
 `;
 
 export const MISSING_NATIVE_EVAL_MESSAGE =
-	'CLJS eval is unavailable: this session has no native "eval" tool delegation context (Task/scout/isolated agents often omit the JS backend). Use read, grep, glob, or bash. Do not retry eval.';
+	'CLJS eval is unavailable: this session has no native "eval" tool delegation context (Task/scout/isolated agents often omit the JS backend). Do not retry eval. Use an available direct tool such as read, grep, or glob instead.';
 
 export const AWAIT_IN_SYNC_DEFN_MESSAGE =
 	"js-await/js/await belongs in a top-level form, let, or ^:async defn. A sync defn cannot contain await.";
@@ -203,20 +203,23 @@ const CLJS_EXAMPLES = [
 	{ caption: "Define and display", code: "(def result (+ 1 2))\n(display result)" },
 	{ caption: "js-await a promise", code: "(js-await (js/Promise.resolve 3))" },
 	{ caption: "Shell via sh", code: '(js-await (sh "git status --short"))' },
+	{ caption: "CLJS-shaped print", code: "(pr (atom {:n 1}))" },
 ] as const;
 
 const CLJS_BOUNDARIES = [
 	"Write direct Squint forms; do not wrap a cell in Vite or JavaScript module scaffolding.",
 	"Every cell needs a final expression or display(...)/pr(...); a def alone has no visible output.",
 	"Use display(...) or pr(...) for visible intermediate output and output(...) to inspect prior tool output.",
+	"display(...) uses the native formatter while pr(...) renders CLJS shapes; reach for pr(...) when CLJS-shaped output matters.",
 	"Top-level defs persist until reset: true; other cells can reuse them.",
 	"Prefer str/replace after :as str. Do not :refer replace and call it bare.",
 	"Project-local CLJS require and path resolution are unavailable; do not use Clojure require for project-local modules. Session :as aliases from a prior cell may persist until reset: true.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
+	"Squint has no js->clj; clj->js works. Shape JavaScript values into CLJS with vec, aget, and js-keys.",
 	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
 	'For names not valid CLJS identifiers, use (js-await ((aget tool "tool-name") {:arg "value"})).',
 	"Multiple top-level forms execute in order; the final form supplies the cell result.",
-	"If eval reports that the native backend is unavailable, stop. Do not retry eval. Use read, grep, glob, or bash.",
+	"If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.",
 	"Do not use eval to discover cwd, env, or tool names, and do not write xd://report_issue from a cell.",
 	"Do not expose host environment from a cell, including through delegated tools.",
 ] as const;

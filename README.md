@@ -14,23 +14,23 @@ model eval call (language: "cljs")
   -> return the native eval result
 ```
 
-The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.2.12 or newer, native JavaScript must remain enabled as the hidden execution backend; it is not exposed as a model-selectable language by this plugin. Unrestricted Task/scout sessions that omit native `eval` from their allowlist still receive this extension tool via OMP's extension always-include, but execution fails closed before compile. Restricted hosts (`restrictToolNames`) do not load registered extensions. The unavailable-backend error is terminal for `eval` in that session: use `read`, `grep`, `glob`, or `bash` instead of retrying.
+The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.2.12 or newer, native JavaScript must remain enabled as the hidden execution backend; it is not exposed as a model-selectable language by this plugin. Unrestricted Task/scout sessions that omit native `eval` from their allowlist still receive this extension tool via OMP's extension always-include, but execution fails closed before compile. Restricted hosts (`restrictToolNames`) do not load registered extensions. If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.
 
 ## Install and operate
 
 The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.15'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.15'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.14`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.15`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -99,6 +99,7 @@ CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `
 ```
 
 Bare `await` is not that special form. Keep `js-await` in a top-level form, `let`, or `^:async defn`.
+Squint has no `js->clj`; `clj->js` works. Shape JavaScript values into CLJS with `vec`, `aget`, and `js-keys`.
 
 `(pr value)` prints a truncated CLJS-shaped view (sets, lists, functions, circular values) and returns the value. `(js-await (sh "git status --short"))` calls the native bash tool through the host tool proxy (`tool["bash"]`); it is not a subprocess of the JS worker. There is no `js/bash` helper; that form fails with that instruction. There is no `env` helper; that form fails closed without dumping host environment.
 
@@ -141,22 +142,30 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 
 ```sh
 bun run eval:guidance --model provider/model \
-  --baseline evals/baseline-v0.1.1.json \
-  --output evals/results/candidate-v0.1.14.json
+  --baseline evals/baseline-v0.1.14.json \
+  --output evals/results/candidate-v0.1.15.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```
 
-Record a historical checkout against the exact current case prompts with `--extension` and `--record-baseline`:
+Cases are one of two kinds. A `mechanical` case dictates exact source and pins each call's code, result, and reset; it guards the compile and delegation path. A `naturalistic` case states only a user goal and grades the observed outcome, call-count bounds, tool choice, eval errors, and `forbiddenEvalCodeRegexes`; it is what measures whether model-visible guidance actually works. A case may materialize its own `fixtureFiles` so it never depends on the surrounding repository.
+
+Sealed holdouts are skipped by default. Run them deliberately:
+
+```sh
+bun run eval:guidance --model provider/model --include-holdouts
+```
+
+Record a baseline for a given checkout against the exact current case prompts with `--extension` and `--record-baseline`, which always includes holdouts:
 
 ```sh
 bun run eval:guidance --model provider/model \
-  --extension /path/to/v0.1.1/index.ts \
-  --record-baseline 0.1.1 \
-  --output /tmp/baseline-v0.1.1.json
+  --extension /path/to/pristine/index.ts \
+  --record-baseline 0.1.14 \
+  --output evals/baseline-v0.1.14.json
 ```
 
-Recorded baselines persist each prompt and its SHA-256 digest. Normal comparisons fail closed before model execution when the model, case IDs, prompt text, or prompt hashes differ. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads the selected checkout explicitly with only top-level `eval`. Optional result files contain only sanitized eval arguments/results, prompt hashes, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.
+Recorded baselines persist each prompt and its SHA-256 digest. Normal comparisons fail closed before model execution when the model, run-case IDs, prompt text, or prompt hashes differ; extra baseline entries for skipped holdouts are tolerated. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads the selected checkout explicitly with only the tools that case exposes. Optional result files contain only sanitized eval arguments/results, prompt hashes, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.
 
 ## Update and rollback
 

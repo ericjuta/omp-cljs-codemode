@@ -20,10 +20,10 @@ Checkout tests and `bun run check` are not live proof.
 Current public install:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.14'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.15'
 ```
 
-`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.14`. Then start a new OMP process.
+`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.15`. Then start a new OMP process.
 
 ## Wrapper contract
 
@@ -45,7 +45,7 @@ First-cell `reset: true` remains valid for persistence setup. Prefer `str/replac
 
 1. Parent/main session: a bare `(+ 1 2)` cell should return `3`.
 2. Unrestricted Task/scout without native `eval`: the same call should fail closed **before** compile. Invalid source such as `(` must produce the unavailable-backend error, not a Squint reader error.
-3. If the message says the native backend is unavailable, stop. Use `read`, `grep`, `glob`, or `bash`. Do not retry `eval`.
+3. If the message says the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.
 
 Current fail-closed text starts with `CLJS eval is unavailable` and tells the model not to retry.
 
@@ -68,7 +68,7 @@ omp --no-session --mode json --auto-approve --tools eval --model "$CLJS_CODEMODE
 
 Quote completed `eval` tool texts, not the child model's summary.
 
-Expected printer lines on 0.1.14:
+Expected printer lines on 0.1.15:
 
 - `() (1 2 3) [] [1 2 3] (1 2)`
 - `#atom {:n 1}`
@@ -91,6 +91,7 @@ These compile or run and are separate from missing delegation:
 - `(defn ... (js/await ...))` without `^:async` → compile diagnostic.
 - `(def answer ...)` with no final expression → native `(no output)`. Add a final value, `(display ...)`, or `(pr ...)`.
 - Using eval to probe cwd, `js/Object.keys tool`, or `xd://report_issue`. Use `read`, `write`, or the named tool instead.
+- `js->clj` is unavailable; `clj->js` works. Shape JS values with `vec`, `aget`, and `js-keys`.
 
 ## Release gate
 

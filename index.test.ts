@@ -224,6 +224,7 @@ describe("CLJS codemode plugin", () => {
 			"(def result (+ 1 2))\n(display result)",
 			"(js-await (js/Promise.resolve 3))",
 			'(js-await (sh "git status --short"))',
+			"(pr (atom {:n 1}))",
 		] as const;
 		expect(description).toContain("<examples>");
 		expect(description).toContain("</examples>");
@@ -239,6 +240,9 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("Session :as aliases from a prior cell may persist until reset: true");
 		expect(description).toContain("js-await");
 		expect(description).toContain("^:async defn");
+		expect(description).toContain("(pr (atom {:n 1}))");
+		expect(description).toContain("display(...) uses the native formatter while pr(...) renders CLJS shapes; reach for pr(...) when CLJS-shaped output matters.");
+		expect(description).toContain("Squint has no js->clj; clj->js works. Shape JavaScript values into CLJS with vec, aget, and js-keys.");
 		expect(description).not.toContain("Codemode is more effective long term than direct tools");
 		expect(description).not.toContain("Prefer long-lived cljs cells");
 		expect(description).not.toContain('Prefer (js-await (js/read "package.json"))');
@@ -250,6 +254,7 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("output(...)");
 		expect(description).toContain("this tool cannot create one");
 		expect(description).toContain("Do not retry eval");
+		expect(description).toContain("Do not retry eval. Use an available direct tool such as read, grep, or glob instead.");
 		expect(description).toContain("Do not use eval to discover cwd");
 		expect(description).toContain("xd://report_issue");
 		expect(description).toContain("Prefer str/replace after :as str");
@@ -261,6 +266,7 @@ describe("CLJS codemode plugin", () => {
 		expect(description).not.toContain("write(), env(), output()");
 		expect(description).not.toContain("process.env");
 		expect(description).not.toContain("Bun.env");
+		expect(description).not.toContain('(js-await (sh "git status --short"))');
 	});
 
 	it("injects pr, sh, and a bash diagnostic helper", async () => {

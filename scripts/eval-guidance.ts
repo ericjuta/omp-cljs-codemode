@@ -4,54 +4,79 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
-const DEFAULT_CASES = join(ROOT, "evals", "cases.json");
-const DEFAULT_BASELINE = join(ROOT, "evals", "baseline-v0.1.1.json");
+const EVALS_ROOT = join(ROOT, "evals");
+const DEFAULT_CASES = join(EVALS_ROOT, "cases.json");
+const DEFAULT_BASELINE = join(EVALS_ROOT, "baseline-v0.1.14.json");
 const DEFAULT_EXTENSION = join(ROOT, "index.ts");
-const RESULTS_ROOT = join(ROOT, "evals", "results");
 const PACKAGE_NAME = "@ericjuta/omp-cljs-codemode";
 const MAX_CASE_TIME_MS = 120_000;
 const MAX_JSONL_LINE_CHARS = 2_000_000;
+const FIXTURE_PATH_PROBE_ROOT = "/omp-cljs-guidance-fixture";
 
 type JsonRecord = Record<string, unknown>;
 
-type EvalCallCount = {
-	exact: number;
+type EvalCallCountRange = {
 	min: number;
 	max: number;
 };
 
-type GuidanceCase = {
+type ExactEvalCallCount = EvalCallCountRange & {
+	exact: number;
+};
+
+type GuidanceCaseKind = "mechanical" | "naturalistic";
+
+type BaseGuidanceCase = {
 	id: string;
+	kind: GuidanceCaseKind;
 	description: string;
 	holdout: boolean;
 	prompt: string;
 	maxTimeMs: number;
 	expectedFinalRegex: string;
-	expectedEvalResultRegexes: string[];
-	expectedEvalCodeRegexes: string[];
-	expectedReset: Array<boolean | null>;
-	evalCallCount: EvalCallCount;
+	exposedTools: string[];
 	maxEvalErrors: number;
 	allowedTools: string[];
 	expectedLanguage: "cljs";
+	fixtureFiles?: Record<string, string>;
 };
 
+type MechanicalGuidanceCase = BaseGuidanceCase & {
+	kind: "mechanical";
+	expectedEvalResultRegexes: string[];
+	expectedEvalCodeRegexes: string[];
+	expectedReset: Array<boolean | null>;
+	evalCallCount: ExactEvalCallCount;
+};
+
+type NaturalisticGuidanceCase = BaseGuidanceCase & {
+	kind: "naturalistic";
+	forbiddenEvalCodeRegexes: string[];
+	evalCallCount: EvalCallCountRange;
+};
+
+type GuidanceCase = MechanicalGuidanceCase | NaturalisticGuidanceCase;
+
 type GuidanceSuite = {
-	schemaVersion: number;
+	schemaVersion: 2;
 	suite: string;
 	cases: GuidanceCase[];
 };
 
 type BaselineCase = {
 	id: string;
+	kind: GuidanceCaseKind;
 	prompt: string;
 	promptSha256: string;
 	finalText: string;
+	passed: boolean;
 	evalCallCount: number;
 	evalErrorCount: number;
+	toolNames: string[];
 };
 
 type Baseline = {
+	schemaVersion: 2;
 	version: string;
 	model: string;
 	cases: BaselineCase[];
@@ -89,8 +114,10 @@ type Collector = {
 
 type CaseResult = {
 	id: string;
+	kind: GuidanceCaseKind;
 	promptSha256: string;
 	holdout: boolean;
+	toolNames: string[];
 	evalCalls: SanitizedEvalCall[];
 	evalCallCount: number;
 	evalErrorCount: number;
@@ -110,6 +137,7 @@ type CliOptions = {
 	extensionPath: string;
 	outputPath?: string;
 	recordBaselineVersion?: string;
+	includeHoldouts: boolean;
 	help: boolean;
 };
 
@@ -165,8 +193,58 @@ function requireResetArray(record: JsonRecord, key: string, context: string): Ar
 	return [...value] as Array<boolean | null>;
 }
 
+function requireStringArray(record: JsonRecord, key: string, context: string, nonEmpty: boolean): string[] {
+	const value = record[key];
+	if (!Array.isArray(value) || !value.every(item => typeof item === "string")) {
+		throw new Error(`${context}.${key} must be a string array`);
+	}
+	if (nonEmpty && value.length === 0) throw new Error(`${context}.${key} must not be empty`);
+	return [...value] as string[];
+}
+
+function requireFixtureFiles(record: JsonRecord, key: string, context: string): Record<string, string> | undefined {
+	const value = record[key];
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) throw new Error(`${context}.${key} must map relative POSIX paths to string contents`);
+	const files: Record<string, string> = {};
+	for (const [path, contents] of Object.entries(value)) {
+		const where = `${context}.${key}[${JSON.stringify(path)}]`;
+		if (typeof contents !== "string") throw new Error(`${where} must be a string`);
+		if (path.length === 0) throw new Error(`${context}.${key} keys must be non-empty relative POSIX paths`);
+		if (isAbsolute(path) || path.startsWith("/")) throw new Error(`${where} must be a relative path`);
+		if (path.split("/").some(segment => segment.length === 0 || segment === "." || segment === "..")) {
+			throw new Error(`${where} must not contain empty, "." or ".." path segments`);
+		}
+		if (!isWithin(FIXTURE_PATH_PROBE_ROOT, resolve(FIXTURE_PATH_PROBE_ROOT, path))) {
+			throw new Error(`${where} must stay inside the fixture directory`);
+		}
+		files[path] = contents;
+	}
+	return files;
+}
+
+function requireCaseKind(record: JsonRecord, key: string, context: string): GuidanceCaseKind {
+	const kind = requireString(record, key, context);
+	if (kind !== "mechanical" && kind !== "naturalistic") {
+		throw new Error(`${context}.${key} must be "mechanical" or "naturalistic"`);
+	}
+	return kind;
+}
+
+function requireBoolean(record: JsonRecord, key: string, context: string): boolean {
+	const value = record[key];
+	if (typeof value !== "boolean") throw new Error(`${context}.${key} must be a boolean`);
+	return value;
+}
+
+function assertAbsent(record: JsonRecord, key: string, context: string, kind: GuidanceCaseKind): void {
+	if (key in record) throw new Error(`${context}.${key} is not allowed for ${kind} cases`);
+}
+
 function parseSuite(value: unknown): GuidanceSuite {
 	if (!isRecord(value) || !Array.isArray(value.cases)) throw new Error("cases file must contain a cases array");
+	const schemaVersion = requireInteger(value, "schemaVersion", "suite");
+	if (schemaVersion !== 2) throw new Error("suite.schemaVersion must be 2");
 	const ids = new Set<string>();
 	const cases = value.cases.map((entry, index): GuidanceCase => {
 		const context = `cases[${index}]`;
@@ -174,62 +252,82 @@ function parseSuite(value: unknown): GuidanceSuite {
 		const id = requireString(entry, "id", context);
 		if (ids.has(id)) throw new Error(`duplicate case id: ${id}`);
 		ids.add(id);
+		const kind = requireCaseKind(entry, "kind", context);
 		if (!isRecord(entry.evalCallCount)) throw new Error(`${context}.evalCallCount must be an object`);
-		const evalCallCount = {
-			exact: requireInteger(entry.evalCallCount, "exact", `${context}.evalCallCount`),
-			min: requireInteger(entry.evalCallCount, "min", `${context}.evalCallCount`),
-			max: requireInteger(entry.evalCallCount, "max", `${context}.evalCallCount`),
-		};
-		if (evalCallCount.min > evalCallCount.exact || evalCallCount.exact > evalCallCount.max) {
-			throw new Error(`${context}.evalCallCount must satisfy min <= exact <= max`);
-		}
+		const min = requireInteger(entry.evalCallCount, "min", `${context}.evalCallCount`);
+		const max = requireInteger(entry.evalCallCount, "max", `${context}.evalCallCount`);
+		if (min > max) throw new Error(`${context}.evalCallCount must satisfy min <= max`);
 		const maxTimeMs = requireInteger(entry, "maxTimeMs", context);
 		if (maxTimeMs === 0 || maxTimeMs > MAX_CASE_TIME_MS) {
 			throw new Error(`${context}.maxTimeMs must be between 1 and ${MAX_CASE_TIME_MS}`);
 		}
-		if (!Array.isArray(entry.allowedTools) || !entry.allowedTools.every(tool => typeof tool === "string")) {
-			throw new Error(`${context}.allowedTools must be a string array`);
-		}
 		if (entry.expectedLanguage !== "cljs") throw new Error(`${context}.expectedLanguage must be "cljs"`);
-		const expectedEvalResultRegexes = requireRegexArray(entry, "expectedEvalResultRegexes", context);
-		const expectedEvalCodeRegexes = requireRegexArray(entry, "expectedEvalCodeRegexes", context);
-		const expectedReset = requireResetArray(entry, "expectedReset", context);
-		if (expectedEvalResultRegexes.length !== evalCallCount.exact) {
-			throw new Error(`${context}.expectedEvalResultRegexes length must equal evalCallCount.exact (${evalCallCount.exact})`);
-		}
-		if (expectedEvalCodeRegexes.length !== evalCallCount.exact) {
-			throw new Error(`${context}.expectedEvalCodeRegexes length must equal evalCallCount.exact (${evalCallCount.exact})`);
-		}
-		if (expectedReset.length !== evalCallCount.exact) {
-			throw new Error(`${context}.expectedReset length must equal evalCallCount.exact (${evalCallCount.exact})`);
-		}
 		const expectedFinalRegex = requireString(entry, "expectedFinalRegex", context);
 		assertValidRegex(expectedFinalRegex, `${context}.expectedFinalRegex`);
-		return {
+		const common = {
 			id,
+			kind,
 			description: requireString(entry, "description", context),
-			holdout: entry.holdout === true,
+			holdout: requireBoolean(entry, "holdout", context),
 			prompt: requireString(entry, "prompt", context),
 			maxTimeMs,
 			expectedFinalRegex,
-			expectedEvalResultRegexes,
-			expectedEvalCodeRegexes,
-			expectedReset,
-			evalCallCount,
+			exposedTools: requireStringArray(entry, "exposedTools", context, true),
 			maxEvalErrors: requireInteger(entry, "maxEvalErrors", context),
-			allowedTools: [...entry.allowedTools] as string[],
-			expectedLanguage: "cljs",
+			allowedTools: requireStringArray(entry, "allowedTools", context, false),
+			expectedLanguage: "cljs" as const,
+			fixtureFiles: requireFixtureFiles(entry, "fixtureFiles", context),
+		};
+		if (kind === "mechanical") {
+			assertAbsent(entry, "forbiddenEvalCodeRegexes", context, kind);
+			const exact = requireInteger(entry.evalCallCount, "exact", `${context}.evalCallCount`);
+			if (min > exact || exact > max) {
+				throw new Error(`${context}.evalCallCount must satisfy min <= exact <= max`);
+			}
+			const expectedEvalResultRegexes = requireRegexArray(entry, "expectedEvalResultRegexes", context);
+			const expectedEvalCodeRegexes = requireRegexArray(entry, "expectedEvalCodeRegexes", context);
+			const expectedReset = requireResetArray(entry, "expectedReset", context);
+			if (expectedEvalResultRegexes.length !== exact) {
+				throw new Error(`${context}.expectedEvalResultRegexes length must equal evalCallCount.exact (${exact})`);
+			}
+			if (expectedEvalCodeRegexes.length !== exact) {
+				throw new Error(`${context}.expectedEvalCodeRegexes length must equal evalCallCount.exact (${exact})`);
+			}
+			if (expectedReset.length !== exact) {
+				throw new Error(`${context}.expectedReset length must equal evalCallCount.exact (${exact})`);
+			}
+			return {
+				...common,
+				kind,
+				expectedEvalResultRegexes,
+				expectedEvalCodeRegexes,
+				expectedReset,
+				evalCallCount: { exact, min, max },
+			};
+		}
+		assertAbsent(entry, "expectedEvalResultRegexes", context, kind);
+		assertAbsent(entry, "expectedEvalCodeRegexes", context, kind);
+		assertAbsent(entry, "expectedReset", context, kind);
+		assertAbsent(entry.evalCallCount, "exact", `${context}.evalCallCount`, kind);
+		return {
+			...common,
+			kind,
+			forbiddenEvalCodeRegexes: requireRegexArray(entry, "forbiddenEvalCodeRegexes", context),
+			evalCallCount: { min, max },
 		};
 	});
 	return {
-		schemaVersion: requireInteger(value, "schemaVersion", "suite"),
+		schemaVersion,
 		suite: requireString(value, "suite", "suite"),
 		cases,
 	};
 }
 
 function parseBaseline(value: unknown): Baseline {
-	if (!isRecord(value) || !Array.isArray(value.cases) || value.cases.length === 0) {
+	if (!isRecord(value)) throw new Error("baseline must be an object");
+	const schemaVersion = requireInteger(value, "schemaVersion", "baseline");
+	if (schemaVersion !== 2) throw new Error("baseline.schemaVersion must be 2");
+	if (!Array.isArray(value.cases) || value.cases.length === 0) {
 		throw new Error("baseline must contain at least one case");
 	}
 	const ids = new Set<string>();
@@ -249,14 +347,18 @@ function parseBaseline(value: unknown): Baseline {
 		}
 		return {
 			id,
+			kind: requireCaseKind(entry, "kind", context),
 			prompt,
 			promptSha256,
 			finalText: requireText(entry, "finalText", context),
+			passed: requireBoolean(entry, "passed", context),
 			evalCallCount: requireInteger(entry, "evalCallCount", context),
 			evalErrorCount: requireInteger(entry, "evalErrorCount", context),
+			toolNames: requireStringArray(entry, "toolNames", context, false),
 		};
 	});
 	return {
+		schemaVersion,
 		version: requireString(value, "version", "baseline"),
 		model: requireString(value, "model", "baseline"),
 		cases,
@@ -286,8 +388,8 @@ function isWithin(parent: string, child: string): boolean {
 
 function resolveOutputPath(path: string): string {
 	const absolute = resolve(ROOT, path);
-	if (isWithin(ROOT, absolute) && !isWithin(RESULTS_ROOT, absolute)) {
-		throw new Error("--output may not overwrite repository source; use evals/results/ or a path outside the repository");
+	if (isWithin(ROOT, absolute) && !isWithin(EVALS_ROOT, absolute)) {
+		throw new Error("--output may not overwrite repository source; use a path under evals/ or outside the repository");
 	}
 	return absolute;
 }
@@ -297,12 +399,17 @@ function parseCli(argv: string[]): CliOptions {
 		casesPath: DEFAULT_CASES,
 		baselinePath: DEFAULT_BASELINE,
 		extensionPath: DEFAULT_EXTENSION,
+		includeHoldouts: false,
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--help" || arg === "-h") {
 			options.help = true;
+			continue;
+		}
+		if (arg === "--include-holdouts") {
+			options.includeHoldouts = true;
 			continue;
 		}
 		let parsed = readOption(argv, index, "--model");
@@ -357,10 +464,11 @@ function printUsage(): void {
 Options:
   --model <model>             Required unless CLJS_CODEMODE_EVAL_MODEL is set
   --cases <path>              Case file (default: evals/cases.json)
-  --baseline <path>           Sanitized baseline (default: evals/baseline-v0.1.1.json)
+  --baseline <path>           Sanitized baseline (default: evals/baseline-v0.1.14.json)
   --extension <path>          Extension entry point (default: index.ts)
-  --output <path>             Write sanitized results (repository paths must be under evals/results/)
+  --output <path>             Write sanitized results (repository paths must be under evals/)
   --record-baseline <version> Write a complete baseline to --output without comparing a prior baseline
+  --include-holdouts          Run cases marked holdout (always included while recording a baseline)
   -h, --help                  Show this help`);
 }
 
@@ -544,23 +652,37 @@ function gradeCase(
 		failures.push(`final response did not match /${testCase.expectedFinalRegex}/u`);
 	}
 	const count = calls.length;
-	const expected = testCase.evalCallCount;
-	if (count !== expected.exact || count < expected.min || count > expected.max) {
-		failures.push(`eval call count ${count}; expected exact ${expected.exact} within [${expected.min}, ${expected.max}]`);
-	}
-	for (const [index, call] of calls.entries()) {
-		const resultPattern = testCase.expectedEvalResultRegexes[index];
-		if (resultPattern !== undefined && !new RegExp(resultPattern, "u").test(call.resultText.trim())) {
-			failures.push(`eval call ${index + 1} result did not match /${resultPattern}/u`);
+	if (testCase.kind === "mechanical") {
+		const expected = testCase.evalCallCount;
+		if (count !== expected.exact || count < expected.min || count > expected.max) {
+			failures.push(`eval call count ${count}; expected exact ${expected.exact} within [${expected.min}, ${expected.max}]`);
 		}
-		const codePattern = testCase.expectedEvalCodeRegexes[index];
-		if (codePattern !== undefined && !new RegExp(codePattern, "u").test(call.args.code ?? "")) {
-			failures.push(`eval call ${index + 1} source code did not match /${codePattern}/u`);
+		for (const [index, call] of calls.entries()) {
+			const resultPattern = testCase.expectedEvalResultRegexes[index];
+			if (resultPattern !== undefined && !new RegExp(resultPattern, "u").test(call.resultText.trim())) {
+				failures.push(`eval call ${index + 1} result did not match /${resultPattern}/u`);
+			}
+			const codePattern = testCase.expectedEvalCodeRegexes[index];
+			if (codePattern !== undefined && !new RegExp(codePattern, "u").test(call.args.code ?? "")) {
+				failures.push(`eval call ${index + 1} source code did not match /${codePattern}/u`);
+			}
+			const expectedReset = testCase.expectedReset[index];
+			const effectiveReset = call.args.reset ?? false;
+			if (expectedReset !== undefined && expectedReset !== null && effectiveReset !== expectedReset) {
+				failures.push(`eval call ${index + 1} effective reset was ${effectiveReset}; expected ${expectedReset}`);
+			}
 		}
-		const expectedReset = testCase.expectedReset[index];
-		const effectiveReset = call.args.reset ?? false;
-		if (expectedReset !== undefined && expectedReset !== null && effectiveReset !== expectedReset) {
-			failures.push(`eval call ${index + 1} effective reset was ${effectiveReset}; expected ${expectedReset}`);
+	} else {
+		const expected = testCase.evalCallCount;
+		if (count < expected.min || count > expected.max) {
+			failures.push(`eval call count ${count}; expected within [${expected.min}, ${expected.max}]`);
+		}
+		for (const [index, call] of calls.entries()) {
+			for (const pattern of testCase.forbiddenEvalCodeRegexes) {
+				if (new RegExp(pattern, "u").test(call.args.code ?? "")) {
+					failures.push(`eval call ${index + 1} source code matched forbidden /${pattern}/u`);
+				}
+			}
 		}
 	}
 	const evalErrorCount = calls.filter(call => call.isError).length;
@@ -582,6 +704,13 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 	const started = performance.now();
 	try {
 		await Bun.write(join(fixture, "package.json"), `${JSON.stringify({ name: PACKAGE_NAME }, null, 2)}\n`);
+		if (testCase.fixtureFiles) {
+			for (const [path, contents] of Object.entries(testCase.fixtureFiles)) {
+				const target = join(fixture, path);
+				await mkdir(dirname(target), { recursive: true });
+				await Bun.write(target, contents);
+			}
+		}
 		const collector = createCollector();
 		const runtimeFailures: string[] = [];
 		let exitStatus: number | null = null;
@@ -598,7 +727,7 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 					"-e",
 					extensionPath,
 					"--tools",
-					"eval",
+					testCase.exposedTools.join(","),
 					"--model",
 					model,
 					"--max-time",
@@ -669,10 +798,13 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 			collector.parseErrors === 0 &&
 			collector.finalResponseSeen &&
 			collector.completedEvalCalls.size === collector.evalCalls.length;
+		const toolNames = [...collector.toolNames].sort();
 		return {
 			id: testCase.id,
+			kind: testCase.kind,
 			promptSha256: sha256(testCase.prompt),
 			holdout: testCase.holdout,
+			toolNames,
 			evalCalls: grade.calls,
 			evalCallCount: grade.calls.length,
 			evalErrorCount: grade.calls.filter(call => call.isError).length,
@@ -689,66 +821,76 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 	}
 }
 
-function assertBaselineCompatible(baseline: Baseline, suite: GuidanceSuite, model: string): void {
+function assertBaselineCompatible(baseline: Baseline, testCases: GuidanceCase[], model: string): void {
 	if (baseline.model !== model) {
 		throw new Error(`baseline model mismatch: expected ${baseline.model}, current model is ${model}`);
 	}
-	const suiteById = new Map(suite.cases.map(testCase => [testCase.id, testCase]));
-	const missing = baseline.cases.filter(entry => !suiteById.has(entry.id)).map(entry => entry.id);
-	if (missing.length > 0) throw new Error(`baseline cases missing from suite: ${missing.join(", ")}`);
-	const baselineIds = new Set(baseline.cases.map(entry => entry.id));
-	const unbaselined = suite.cases.filter(testCase => !baselineIds.has(testCase.id)).map(testCase => testCase.id);
-	if (unbaselined.length > 0) throw new Error(`suite cases missing from baseline: ${unbaselined.join(", ")}`);
-	for (const entry of baseline.cases) {
-		const testCase = suiteById.get(entry.id);
-		if (!testCase) continue;
+	const baselineById = new Map(baseline.cases.map(entry => [entry.id, entry]));
+	for (const testCase of testCases) {
+		const entry = baselineById.get(testCase.id);
+		if (!entry) throw new Error(`run case missing from baseline: ${testCase.id}`);
 		if (entry.prompt !== testCase.prompt || entry.promptSha256 !== sha256(testCase.prompt)) {
-			throw new Error(`baseline prompt/hash drift for case ${entry.id}`);
+			throw new Error(`baseline prompt/hash drift for case ${testCase.id}`);
 		}
 	}
 }
 
-function buildRecordedBaseline(version: string, model: string, suite: GuidanceSuite, results: CaseResult[]): Baseline {
+function buildRecordedBaseline(version: string, model: string, testCases: GuidanceCase[], results: CaseResult[]): Baseline {
 	const byId = new Map(results.map(result => [result.id, result]));
 	return {
+		schemaVersion: 2,
 		version,
 		model,
-		cases: suite.cases.map(testCase => {
+		cases: testCases.map(testCase => {
 			const result = byId.get(testCase.id);
 			if (!result) throw new Error(`missing result for case ${testCase.id}`);
 			return {
 				id: testCase.id,
+				kind: result.kind,
 				prompt: testCase.prompt,
 				promptSha256: result.promptSha256,
 				finalText: result.finalResponse,
+				passed: result.passed,
 				evalCallCount: result.evalCallCount,
 				evalErrorCount: result.evalErrorCount,
+				toolNames: result.toolNames,
 			};
 		}),
 	};
 }
 
 function printBaselineComparison(baseline: Baseline, results: CaseResult[]): number {
-	const byId = new Map(results.map(result => [result.id, result]));
-	const overlap = baseline.cases.flatMap(entry => {
-		const current = byId.get(entry.id);
-		return current ? [{ entry, current }] : [];
+	const baselineById = new Map(baseline.cases.map(entry => [entry.id, entry]));
+	const overlap = results.map(current => {
+		const entry = baselineById.get(current.id);
+		if (!entry) throw new Error(`run case missing from baseline: ${current.id}`);
+		return { entry, current };
 	});
-	if (overlap.length !== baseline.cases.length) {
-		const missing = baseline.cases.filter(entry => !byId.has(entry.id)).map(entry => entry.id);
-		throw new Error(`baseline cases missing from suite: ${missing.join(", ")}`);
-	}
 	const beforeCalls = overlap.reduce((sum, item) => sum + item.entry.evalCallCount, 0);
 	const afterCalls = overlap.reduce((sum, item) => sum + item.current.evalCallCount, 0);
 	const beforeErrors = overlap.reduce((sum, item) => sum + item.entry.evalErrorCount, 0);
 	const afterErrors = overlap.reduce((sum, item) => sum + item.current.evalErrorCount, 0);
+	const beforePassed = overlap.filter(item => item.entry.passed).length;
+	const afterPassed = overlap.filter(item => item.current.passed).length;
 	const equalFinals = overlap.filter(item => item.entry.finalText.trim() === item.current.finalResponse.trim()).length;
 	console.log(
-		`baseline v${baseline.version} (${baseline.model}): overlap=${overlap.length} calls=${beforeCalls}->${afterCalls} errors=${beforeErrors}->${afterErrors} exact-final=${equalFinals}/${overlap.length}`,
+		`baseline v${baseline.version} (${baseline.model}): overlap=${overlap.length} passed=${beforePassed}->${afterPassed} calls=${beforeCalls}->${afterCalls} errors=${beforeErrors}->${afterErrors} exact-final=${equalFinals}/${overlap.length}`,
 	);
+	for (const kind of ["mechanical", "naturalistic"] as const) {
+		const kindOverlap = overlap.filter(item => item.entry.kind === kind);
+		const kindBeforePassed = kindOverlap.filter(item => item.entry.passed).length;
+		const kindAfterPassed = kindOverlap.filter(item => item.current.passed).length;
+		const kindBeforeCalls = kindOverlap.reduce((sum, item) => sum + item.entry.evalCallCount, 0);
+		const kindAfterCalls = kindOverlap.reduce((sum, item) => sum + item.current.evalCallCount, 0);
+		const kindBeforeErrors = kindOverlap.reduce((sum, item) => sum + item.entry.evalErrorCount, 0);
+		const kindAfterErrors = kindOverlap.reduce((sum, item) => sum + item.current.evalErrorCount, 0);
+		console.log(
+			`  ${kind}: overlap=${kindOverlap.length} passed=${kindBeforePassed}->${kindAfterPassed} calls=${kindBeforeCalls}->${kindAfterCalls} errors=${kindBeforeErrors}->${kindAfterErrors}`,
+		);
+	}
 	for (const { entry, current } of overlap) {
 		console.log(
-			`  ${entry.id}: calls ${entry.evalCallCount}->${current.evalCallCount}, errors ${entry.evalErrorCount}->${current.evalErrorCount}, final ${entry.finalText.trim() === current.finalResponse.trim() ? "same" : "changed"}`,
+			`  ${entry.id}: passed=${entry.passed}->${current.passed}, calls ${entry.evalCallCount}->${current.evalCallCount}, errors ${entry.evalErrorCount}->${current.evalErrorCount}, final ${entry.finalText.trim() === current.finalResponse.trim() ? "same" : "changed"}`,
 		);
 	}
 	return overlap.length;
@@ -765,13 +907,19 @@ async function main(): Promise<void> {
 	const extensionStat = await stat(options.extensionPath).catch(() => undefined);
 	if (!extensionStat?.isFile()) throw new Error(`extension entry point is not a file: ${options.extensionPath}`);
 	const suite = await readJson(options.casesPath).then(parseSuite);
+	const includeHoldouts = options.includeHoldouts || options.recordBaselineVersion !== undefined;
+	const runCases = suite.cases.filter(testCase => includeHoldouts || !testCase.holdout);
+	const skippedHoldouts = suite.cases.filter(testCase => testCase.holdout && !includeHoldouts);
 	const baseline = options.recordBaselineVersion === undefined
 		? await readJson(options.baselinePath).then(parseBaseline)
 		: undefined;
-	if (baseline) assertBaselineCompatible(baseline, suite, model);
+	if (baseline) assertBaselineCompatible(baseline, runCases, model);
 	const results: CaseResult[] = [];
-	console.log(`model ${model}; suite ${suite.suite}`);
-	for (const testCase of suite.cases) {
+	console.log(`model ${model}; suite ${suite.suite}; running ${runCases.length}/${suite.cases.length}`);
+	for (const testCase of skippedHoldouts) {
+		console.log(`SKIP ${testCase.id} [holdout] (pass --include-holdouts to run)`);
+	}
+	for (const testCase of runCases) {
 		const result = await runCase(testCase, model, options.extensionPath);
 		results.push(result);
 		console.log(
@@ -780,14 +928,23 @@ async function main(): Promise<void> {
 		if (!result.passed) console.log(`  ${result.failures.join("; ")}`);
 	}
 	const passed = results.filter(result => result.passed).length;
-	console.log(`summary ${passed}/${results.length} passed`);
+	const mechanicalResults = results.filter(result => result.kind === "mechanical");
+	const naturalisticResults = results.filter(result => result.kind === "naturalistic");
+	const mechanicalPassed = mechanicalResults.filter(result => result.passed).length;
+	const naturalisticPassed = naturalisticResults.filter(result => result.passed).length;
+	const totalEvalCalls = results.reduce((sum, result) => sum + result.evalCallCount, 0);
+	const totalEvalErrors = results.reduce((sum, result) => sum + result.evalErrorCount, 0);
+	const cleanFirstAttempts = results.filter(result => result.evalErrorCount === 0).length;
+	console.log(
+		`summary ${passed}/${results.length} passed; mechanical=${mechanicalPassed}/${mechanicalResults.length}; naturalistic=${naturalisticPassed}/${naturalisticResults.length}; eval-calls=${totalEvalCalls}; eval-errors=${totalEvalErrors}; clean-first-attempt=${cleanFirstAttempts}`,
+	);
 	if (options.recordBaselineVersion !== undefined) {
 		if (!options.outputPath) throw new Error("--record-baseline requires --output");
 		const unrecordable = results.filter(result => !result.recordable).map(result => result.id);
 		if (unrecordable.length > 0) {
 			throw new Error(`cannot record baseline after incomplete collection: ${unrecordable.join(", ")}`);
 		}
-		const artifact = buildRecordedBaseline(options.recordBaselineVersion, model, suite, results);
+		const artifact = buildRecordedBaseline(options.recordBaselineVersion, model, runCases, results);
 		await mkdir(dirname(options.outputPath), { recursive: true });
 		await Bun.write(options.outputPath, `${JSON.stringify(artifact, null, 2)}\n`);
 		console.log(`wrote ${options.outputPath}`);
@@ -797,11 +954,21 @@ async function main(): Promise<void> {
 		if (options.outputPath) {
 			await mkdir(dirname(options.outputPath), { recursive: true });
 			const artifact = {
-				schemaVersion: 1,
+				schemaVersion: 2,
 				suite: suite.suite,
 				model,
 				baseline: { version: baseline.version, model: baseline.model, overlap: baselineOverlap },
-				summary: { total: results.length, passed, failed: results.length - passed },
+				summary: {
+					total: results.length,
+					passed,
+					failed: results.length - passed,
+					mechanical: { total: mechanicalResults.length, passed: mechanicalPassed },
+					naturalistic: { total: naturalisticResults.length, passed: naturalisticPassed },
+					evalCalls: totalEvalCalls,
+					evalErrors: totalEvalErrors,
+					cleanFirstAttempts,
+					skippedHoldouts: skippedHoldouts.map(testCase => testCase.id),
+				},
 				cases: results,
 			};
 			await Bun.write(options.outputPath, `${JSON.stringify(artifact, null, 2)}\n`);
