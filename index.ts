@@ -207,6 +207,7 @@ const CLJS_EXAMPLES = [
 ] as const;
 
 const CLJS_BOUNDARIES = [
+	"Use cljs for retained cells, in-cell transforms, and JavaScript interop. Prefer host read, grep, and bash for ordinary file, search, and shell work when those tools succeed. If they return empty or fail, a cljs cell with JavaScript interop is a fallback.",
 	"Write direct Squint forms; do not wrap a cell in Vite or JavaScript module scaffolding.",
 	"Every cell needs a final expression or display(...)/pr(...); a def alone has no visible output.",
 	"Use display(...) or pr(...) for visible intermediate output and output(...) to inspect prior tool output.",

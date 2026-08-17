@@ -69,6 +69,8 @@ omp --no-session --mode json --auto-approve \
 
 ## Use
 
+Use cljs for retained cells, in-cell transforms, and JavaScript interop. Prefer host `read`, `grep`, and `bash` for ordinary file, search, and shell work when those tools succeed. If they return empty or fail, a cljs cell with JavaScript interop is a fallback.
+
 One tool call is one Squint cell:
 
 ```json

@@ -218,6 +218,24 @@
       "fixtureFiles": {
         "package.json": "{\n  \"name\": \"@ericjuta/omp-cljs-codemode\",\n  \"dependencies\": {\n    \"squint-cljs\": \"0.8.159\",\n    \"nanoid\": \"5.0.7\",\n    \"zod\": \"3.23.8\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"5.8.3\",\n    \"@types/node\": \"26.1.2\",\n    \"typebox\": \"1.3.10\",\n    \"@types/bun\": \"1.3.14\"\n  }\n}\n"
       }
+    },
+    {
+      "id": "natural-retain-when-bash-available",
+      "kind": "naturalistic",
+      "description": "Retained cljs cells are used even when bash is available.",
+      "holdout": true,
+      "prompt": "Keep the product of 45 and 97 in the ClojureScript evaluator. In a later evaluation, use that retained value and reply with only its last two digits.",
+      "maxTimeMs": 90000,
+      "expectedFinalRegex": "^65$",
+      "exposedTools": ["eval", "bash"],
+      "allowedTools": ["eval"],
+      "evalCallCount": { "min": 2, "max": 3 },
+      "forbiddenEvalCodeRegexes": [
+        "^(?![\\s\\S]*\\(def\\b[\\s\\S]*$)[\\s\\S]*\\(\\*\\s+(?:45\\s+97|97\\s+45)\\)[\\s\\S]*$",
+        "\\(sh\\b"
+      ],
+      "maxEvalErrors": 0,
+      "expectedLanguage": "cljs"
     }
   ]
 }

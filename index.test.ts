@@ -232,6 +232,11 @@ describe("CLJS codemode plugin", () => {
 			expect(description).toContain(`code=${code.includes("\n") ? `\"\"\"${code}\"\"\"` : JSON.stringify(code)}`);
 			expect(() => compileCljs(code)).not.toThrow();
 		}
+		expect(description).toContain("Use cljs for retained cells, in-cell transforms, and JavaScript interop.");
+		expect(description).toContain("Prefer host read, grep, and bash");
+		expect(description).toContain("If they return empty or fail");
+		expect(description).toContain("a cljs cell with JavaScript interop is a fallback");
+		expect(description).not.toContain("child_process");
 		expect(description).toContain("direct Squint");
 		expect(description).toContain("Vite");
 		expect(description).toContain("final expression or display");
