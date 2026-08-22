@@ -264,18 +264,20 @@
       "allowedTools": ["eval"],
       "evalCallCount": { "min": 1, "max": 3 },
       "requiredEvalCodeRegexes": [
-        "aget\\s+tool\\s+\\\\?\"read\\\\?\"",
-        "aget\\s+tool\\s+\\\\?\"edit\\\\?\""
+        "\\(\\s*\\(\\s*aget\\s+tool\\s+\\\\?\"read\\\\?\"\\s*\\)\\s+",
+        "\\(\\s*\\(\\s*aget\\s+tool\\s+\\\\?\"edit\\\\?\"\\s*\\)\\s+"
       ],
       "forbiddenEvalCodeRegexes": [
         "node:(?:fs|child_process)",
         "child_process",
         "(?:js/require|require)\\s+\\\\?\"(?:node:)?fs\\\\?\"",
-        "(?:readFileSync|writeFileSync)",
+        "js/import\\b",
+        "js/process\\b",
+        "(?:readFile|writeFile|appendFile|open|createReadStream|createWriteStream)(?:Sync)?\\b",
         "js/(?:read|write)\\b",
-        "(?:^|[^A-Za-z0-9_])Bun\\.(?:file|write)",
-        "\\(sh\\s",
-        "\\(write\\s"
+        "(?:js/)?Deno\\.(?:read|write|open|create|command|run)",
+        "(?:^|[^A-Za-z0-9_])Bun\\.(?:file|write|spawn|spawnSync)",
+        "\\((?:read|write|sh)\\s"
       ],
       "maxEvalErrors": 0,
       "expectedLanguage": "cljs",
