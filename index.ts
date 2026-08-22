@@ -154,11 +154,23 @@ function pr(...values) {
 	return values.length <= 1 ? values[0] : values[values.length - 1];
 }
 async function sh(cmd) {
-	if (!tool || typeof tool["bash"] !== "function") {
+	if (!tool) {
 		throw new Error(${JSON.stringify(MISSING_BASH_MESSAGE)});
 	}
-	const args = typeof cmd === "string" ? { command: cmd } : cmd;
-	return await tool["bash"](args);
+	const call = tool["bash"];
+	if (typeof call !== "function") {
+		throw new Error(${JSON.stringify(MISSING_BASH_MESSAGE)});
+	}
+	try {
+		const args = typeof cmd === "string" ? { command: cmd } : cmd;
+		return await call(args);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes("Unknown tool from js runtime: bash")) {
+			throw new Error(${JSON.stringify(MISSING_BASH_MESSAGE)});
+		}
+		throw error;
+	}
 }
 function bash() {
 	throw new Error("There is no js/bash helper. Use (js-await (sh \\"command\\")) or the native bash tool.");

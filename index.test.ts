@@ -390,6 +390,13 @@ describe("CLJS codemode plugin", () => {
 		).resolves.toBe("ok");
 		expect(bashCalls).toEqual([{ command: "git status --short" }]);
 		await expect(evaluateCljsCell('(js-await (sh "true"))', {})).rejects.toThrow(MISSING_BASH_MESSAGE);
+		await expect(
+			evaluateCljsCell('(js-await (sh "true"))', {
+				bash: async () => {
+					throw new Error("Unknown tool from js runtime: bash");
+				},
+			}),
+		).rejects.toThrow(MISSING_BASH_MESSAGE);
 		const runBash = new AsyncFunction(
 			compileCljs('(js/bash {:command "true"})').replace(/^import .+;\n/gm, ""),
 		) as () => Promise<unknown>;
