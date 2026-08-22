@@ -22,6 +22,7 @@ type ToolContext = {
 
 export type ToolApi = {
 	typebox: TypeBox;
+	hasNativeTool?(name: string): boolean;
 	registerTool(tool: Record<string, unknown>): void;
 };
 
@@ -427,6 +428,8 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 		parameters,
 		loadMode: "essential",
 		strict: true,
+		codeModeActivation: "all-models",
+		supportsCodeModeTransport: () => pi.hasNativeTool?.("eval") === true,
 		concurrency: "exclusive",
 		execute: async (
 			_toolCallId: string,

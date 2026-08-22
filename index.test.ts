@@ -81,6 +81,17 @@ describe("CLJS codemode plugin", () => {
 		expect(parameters.properties.timeout).toBeDefined();
 	});
 
+	it("fails Code Mode transport closed without a native eval capability", () => {
+		const tool = createCljsEvalTool(fakePi);
+		expect(tool.codeModeActivation).toBe("all-models");
+		expect((tool.supportsCodeModeTransport as () => boolean)()).toBe(false);
+	});
+
+	it("activates Code Mode for every model through the native eval bridge", () => {
+		const tool = createCljsEvalTool({ ...fakePi, hasNativeTool: name => name === "eval" });
+		expect((tool.supportsCodeModeTransport as () => boolean)()).toBe(true);
+	});
+
 	it("compiles and executes nested async CLJS expressions", async () => {
 		const value = await evaluateCljsCell(
 			"(def result (let [value (js/await (js/Promise.resolve 7))] value))\nresult",
