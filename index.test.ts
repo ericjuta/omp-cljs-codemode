@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "typebox";
-import { AWAIT_IN_SYNC_DEFN_MESSAGE, compileCljs, createCljsEvalTool, ENV_HELPER_MESSAGE, MISSING_NATIVE_EVAL_MESSAGE } from "./index.js";
+import {
+	AWAIT_IN_SYNC_DEFN_MESSAGE,
+	compileCljs,
+	createCljsEvalTool,
+	ENV_HELPER_MESSAGE,
+	MISSING_BASH_MESSAGE,
+	MISSING_NATIVE_EVAL_MESSAGE,
+} from "./index.js";
 
 const fakePi = {
 	typebox: { Type },
@@ -323,6 +330,7 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain("Prefer str/replace after :as str");
 		expect(description).not.toContain("Experimental compiler ns-state");
 		expect(description).toContain('host bash tool via tool["bash"]');
+		expect(description).toContain('sh calls tool["bash"] only when bash is exposed and fails closed otherwise');
 		expect(description).toContain("truncated CLJS-shaped view");
 		expect(description).toContain("There is no env helper");
 		expect(description).toContain("eval-local read(path, offset?, limit?) helper reads regular files only");
@@ -381,6 +389,7 @@ describe("CLJS codemode plugin", () => {
 			}),
 		).resolves.toBe("ok");
 		expect(bashCalls).toEqual([{ command: "git status --short" }]);
+		await expect(evaluateCljsCell('(js-await (sh "true"))', {})).rejects.toThrow(MISSING_BASH_MESSAGE);
 		const runBash = new AsyncFunction(
 			compileCljs('(js/bash {:command "true"})').replace(/^import .+;\n/gm, ""),
 		) as () => Promise<unknown>;
@@ -571,6 +580,16 @@ describe("CLJS codemode plugin", () => {
 		const code = compileCljs('(str/replace "aa" "a" "b")');
 		expect(code).toContain("str.replace");
 		expect(code).not.toContain("squint_core.replace");
+	});
+
+	it("resolves clojure.string requires to Squint's bundled module", () => {
+		const bare = compileCljs("(require '[clojure.string :as str])");
+		expect(bare).toContain("squint-cljs/src/squint/string.js");
+		expect(bare).not.toContain("from 'clojure.string'");
+		const quoted = compileCljs(`(require '["clojure.string" :as str])`);
+		expect(quoted).toContain("squint-cljs/src/squint/string.js");
+		expect(quoted).not.toContain("from 'clojure.string'");
+		expect(compileCljs(`(require '["clojure.set" :as set])`)).toContain("squint-cljs/src/squint/set.js");
 	});
 
 	it("compiles bare replace to squint_core.replace", () => {

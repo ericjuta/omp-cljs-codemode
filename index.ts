@@ -39,9 +39,16 @@ type CljsEvalParams = {
 };
 
 const CORE_IMPORT = "import * as squint_core from 'squint-cljs/core.js';\n";
+const SQUINT_STDLIB_SPECIFIERS = [
+	["clojure.string", "squint-cljs/src/squint/string.js"],
+	["clojure.set", "squint-cljs/src/squint/set.js"],
+] as const;
 
 export const ENV_HELPER_MESSAGE =
 	"Host environment is not available through eval helpers. Do not dump environment from a cell.";
+
+export const MISSING_BASH_MESSAGE =
+	'sh needs the host "bash" tool, but this session does not expose bash. Do not retry.';
 
 const PRELUDE = `const CLJS_PRINT_LENGTH = 32;
 const CLJS_PRINT_DEPTH = 4;
@@ -147,6 +154,9 @@ function pr(...values) {
 	return values.length <= 1 ? values[0] : values[values.length - 1];
 }
 async function sh(cmd) {
+	if (!tool || typeof tool["bash"] !== "function") {
+		throw new Error(${JSON.stringify(MISSING_BASH_MESSAGE)});
+	}
 	const args = typeof cmd === "string" ? { command: cmd } : cmd;
 	return await tool["bash"](args);
 }
@@ -223,7 +233,7 @@ const CLJS_BOUNDARIES = [
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
 	"Squint has no js->clj; clj->js works. Shape JavaScript values into CLJS with vec, aget, and js-keys.",
 	"The eval-local read(path, offset?, limit?) helper reads regular files only. It does not expand ~ and does not support directory reads. Use direct host read when exposed, or bridged tool.read in Code Mode, for host read semantics.",
-	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
+	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. sh calls tool["bash"] only when bash is exposed and fails closed otherwise. There is no js/bash helper. There is no env helper.',
 	'For bridged tools, use (js-await ((aget tool "tool-name") (clj->js {:arg "value"}))).',
 	"Multiple top-level forms execute in order; the final form supplies the cell result.",
 	"If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.",
@@ -251,6 +261,16 @@ function splitLeadingImports(source: string): { header: string; rest: string } {
 	return { header: lines.slice(0, index).join(""), rest: lines.slice(index).join("") };
 }
 
+function rewriteStdlibSpecifiers(imports: string): string {
+	let next = imports;
+	for (const [specifier, target] of SQUINT_STDLIB_SPECIFIERS) {
+		const rewritten = `from ${JSON.stringify(target)}`;
+		next = next.replaceAll(`from '${specifier}'`, rewritten);
+		next = next.replaceAll(`from "${specifier}"`, rewritten);
+	}
+	return next;
+}
+
 function rewriteCoreImport(compiled: CompileStringExResult): string {
 	const imports = compiled.imports ?? "";
 	const coreImportIndex = imports.indexOf(CORE_IMPORT);
@@ -264,7 +284,9 @@ function rewriteCoreImport(compiled: CompileStringExResult): string {
 	const runtimeCoreImport = `import * as squint_core from ${JSON.stringify(import.meta.resolve("squint-cljs/core.js"))};\n`;
 	const rewrittenImports =
 		imports.slice(0, coreImportIndex) + runtimeCoreImport + imports.slice(coreImportIndex + CORE_IMPORT.length);
-	return `${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`;
+	return rewriteStdlibSpecifiers(
+		`${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`,
+	);
 }
 
 function injectPrelude(javascript: string): string {
