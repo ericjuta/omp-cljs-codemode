@@ -20,21 +20,19 @@ Unrestricted Task/scout sessions that omit native `eval` from their allowlist st
 
 ## Install and operate
 
-The repository is public. The all-model bridge changes in this checkout are unreleased; verify them with a linked checkout and OMP 18. The command below installs the current public v0.1.17 release and does not contain the later checkout changes.
-
-Install that immutable public release directly over HTTPS; no GitHub credentials are required:
+The repository is public. Install the immutable public v0.1.18 release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.18'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.18'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.17`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.18`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -151,7 +149,7 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 ```sh
 bun run eval:guidance --model provider/model \
   --baseline evals/baseline-v0.1.17.json \
-  --output evals/results/candidate-unreleased.json
+  --output evals/results/candidate-v0.1.18.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```

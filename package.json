@@ -1,6 +1,6 @@
 {
   "name": "@ericjuta/omp-cljs-codemode",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Add Squint ClojureScript cells to OMP's native codemode eval tool.",
   "type": "module",
   "repository": {

@@ -17,13 +17,13 @@ Three things are not the same:
 
 Checkout tests and `bun run check` are not live proof.
 
-Current public install (v0.1.17 does not contain unreleased all-model bridge changes from a later checkout):
+Current public install:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.18'
 ```
 
-`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.17`. Then start a new OMP process.
+`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.18`. Then start a new OMP process.
 
 ## Wrapper contract
 
@@ -70,7 +70,7 @@ omp --no-session --mode json --auto-approve --tools eval --model "$CLJS_CODEMODE
 
 Quote completed `eval` tool texts, not the child model's summary.
 
-Expected printer lines on 0.1.17:
+Expected printer lines on 0.1.18:
 
 - `() (1 2 3) [] [1 2 3] (1 2)`
 - `#atom {:n 1}`
