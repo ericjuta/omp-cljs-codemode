@@ -13,6 +13,10 @@ type TypeBox = {
 	};
 };
 
+export type CodeModeBridge = {
+	getDeclarations(): string | undefined;
+};
+
 type ToolContext = {
 	invokeTool?: (
 		params: Record<string, unknown>,
@@ -208,7 +212,7 @@ const CLJS_EXAMPLES = [
 ] as const;
 
 const CLJS_BOUNDARIES = [
-	"Use cljs for retained cells, in-cell transforms, and JavaScript interop. Prefer host read, grep, and bash for ordinary file, search, and shell work when those tools succeed. If they return empty or fail, a cljs cell with JavaScript interop is a fallback.",
+	"Use cljs for retained cells, in-cell transforms, and JavaScript interop. Use host read, grep, and bash directly when they are exposed. If a direct tool returns empty or fails, a cljs cell with JavaScript interop is a fallback.",
 	"Write direct Squint forms; do not wrap a cell in Vite or JavaScript module scaffolding.",
 	"Every cell needs a final expression or display(...)/pr(...); a def alone has no visible output.",
 	"Use display(...) or pr(...) for visible intermediate output and output(...) to inspect prior tool output.",
@@ -218,8 +222,9 @@ const CLJS_BOUNDARIES = [
 	"Project-local CLJS require and path resolution are unavailable; do not use Clojure require for project-local modules. Session :as aliases from a prior cell may persist until reset: true.",
 	"Use js-await (or js/await). Bare await is not the special form. Keep it in a top-level form, let, or ^:async defn.",
 	"Squint has no js->clj; clj->js works. Shape JavaScript values into CLJS with vec, aget, and js-keys.",
+	"The eval-local read(path, offset?, limit?) helper reads regular files only. It does not expand ~ and does not support directory reads. Use direct host read when exposed, or bridged tool.read in Code Mode, for host read semantics.",
 	'(pr value) prints a truncated CLJS-shaped view and returns the value. (js-await (sh "git status")) calls the host bash tool via tool["bash"], not a child of the JS worker. There is no js/bash helper. There is no env helper.',
-	'For names not valid CLJS identifiers, use (js-await ((aget tool "tool-name") {:arg "value"})).',
+	'For bridged tools, use (js-await ((aget tool "tool-name") (clj->js {:arg "value"}))).',
 	"Multiple top-level forms execute in order; the final form supplies the cell result.",
 	"If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.",
 	"Do not use eval to discover cwd, env, or tool names, and do not write xd://report_issue from a cell.",
@@ -411,6 +416,27 @@ function modelGuidance(): string {
 	].join("\n");
 }
 
+function codeModeGuidance(baseDescription: string, declarations: string): string {
+	return [
+		baseDescription,
+		"",
+		"Code Mode is active: this eval tool is the primary work surface and the direct tool surface is restricted.",
+		"Tools declared below are hidden from direct calls. Invoke them from CLJS through the live tool bridge, not through raw filesystem or process APIs.",
+		'Call one bridged tool with (js-await ((aget tool "read") (clj->js {:path "package.json"}))).',
+		'For independent calls, pass their promises to js/Promise.all, for example #js [((aget tool "read") (clj->js {:path "a.txt"})) ((aget tool "read") (clj->js {:path "b.txt"}))].',
+		"Promise.all returns a JavaScript array. Access it with vec, aget, or (range (.-length results)) plus indexed aget. Do not use array-seq.",
+		"The eval-local read(path, offset?, limit?) helper remains regular-file-only, does not expand ~, and cannot read directories. Bridged tool.read follows the live host schema below.",
+		"Reserve separate cells for steps that must inspect earlier results.",
+		"",
+		"Live bridged tool declarations:",
+		"```ts",
+		"declare const tool: {",
+		declarations,
+		"};",
+		"```",
+	].join("\n");
+}
+
 export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 	const Type = pi.typebox.Type;
 	const parameters = Type.Object({
@@ -420,16 +446,24 @@ export function createCljsEvalTool(pi: ToolApi): Record<string, unknown> {
 		timeout: Type.Optional(Type.Number({ description: "Timeout for this eval call in seconds; 0 disables the cell timeout." })),
 		reset: Type.Optional(Type.Boolean({ description: "Reset the selected language runtime before running." })),
 	});
+	let codeModeBridge: CodeModeBridge | undefined;
 
 	return {
 		name: "eval",
 		label: "Eval",
-		description: modelGuidance(),
+		get description() {
+			const baseDescription = modelGuidance();
+			const declarations = codeModeBridge?.getDeclarations();
+			return declarations === undefined ? baseDescription : codeModeGuidance(baseDescription, declarations);
+		},
 		parameters,
 		loadMode: "essential",
 		strict: true,
 		codeModeActivation: "all-models",
-		supportsCodeModeTransport: () => pi.hasNativeTool?.("eval") === true,
+		setCodeModeBridge: (bridge: CodeModeBridge) => {
+			codeModeBridge = bridge;
+		},
+		supportsCodeModeTransport: () => codeModeBridge !== undefined,
 		concurrency: "exclusive",
 		execute: async (
 			_toolCallId: string,

@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ROOT = resolve(import.meta.dir, "..");
 const EVALS_ROOT = join(ROOT, "evals");
 const DEFAULT_CASES = join(EVALS_ROOT, "cases.json");
-const DEFAULT_BASELINE = join(EVALS_ROOT, "baseline-v0.1.14.json");
+const DEFAULT_BASELINE = join(EVALS_ROOT, "baseline-v0.1.17.json");
 const DEFAULT_EXTENSION = join(ROOT, "index.ts");
 const PACKAGE_NAME = "@ericjuta/omp-cljs-codemode";
 const MAX_CASE_TIME_MS = 120_000;
@@ -25,10 +26,12 @@ type ExactEvalCallCount = EvalCallCountRange & {
 };
 
 type GuidanceCaseKind = "mechanical" | "naturalistic";
+type GuidanceSurface = "direct" | "code-mode";
 
 type BaseGuidanceCase = {
 	id: string;
 	kind: GuidanceCaseKind;
+	surface: GuidanceSurface;
 	description: string;
 	holdout: boolean;
 	prompt: string;
@@ -39,6 +42,8 @@ type BaseGuidanceCase = {
 	allowedTools: string[];
 	expectedLanguage: "cljs";
 	fixtureFiles?: Record<string, string>;
+	expectedFixtureFiles?: Record<string, string>;
+	editVariant?: "replace";
 };
 
 type MechanicalGuidanceCase = BaseGuidanceCase & {
@@ -51,6 +56,7 @@ type MechanicalGuidanceCase = BaseGuidanceCase & {
 
 type NaturalisticGuidanceCase = BaseGuidanceCase & {
 	kind: "naturalistic";
+	requiredEvalCodeRegexes: string[];
 	forbiddenEvalCodeRegexes: string[];
 	evalCallCount: EvalCallCountRange;
 };
@@ -58,7 +64,7 @@ type NaturalisticGuidanceCase = BaseGuidanceCase & {
 type GuidanceCase = MechanicalGuidanceCase | NaturalisticGuidanceCase;
 
 type GuidanceSuite = {
-	schemaVersion: 2;
+	schemaVersion: 3;
 	suite: string;
 	cases: GuidanceCase[];
 };
@@ -66,6 +72,8 @@ type GuidanceSuite = {
 type BaselineCase = {
 	id: string;
 	kind: GuidanceCaseKind;
+	surface: GuidanceSurface;
+	editVariant?: "replace";
 	prompt: string;
 	promptSha256: string;
 	finalText: string;
@@ -76,7 +84,7 @@ type BaselineCase = {
 };
 
 type Baseline = {
-	schemaVersion: 2;
+	schemaVersion: 3;
 	version: string;
 	model: string;
 	cases: BaselineCase[];
@@ -115,6 +123,7 @@ type Collector = {
 type CaseResult = {
 	id: string;
 	kind: GuidanceCaseKind;
+	surface: GuidanceSurface;
 	promptSha256: string;
 	holdout: boolean;
 	toolNames: string[];
@@ -223,12 +232,27 @@ function requireFixtureFiles(record: JsonRecord, key: string, context: string): 
 	return files;
 }
 
+function requireSurface(record: JsonRecord, key: string, context: string): GuidanceSurface {
+	const surface = requireString(record, key, context);
+	if (surface !== "direct" && surface !== "code-mode") {
+		throw new Error(`${context}.${key} must be "direct" or "code-mode"`);
+	}
+	return surface;
+}
+
 function requireCaseKind(record: JsonRecord, key: string, context: string): GuidanceCaseKind {
 	const kind = requireString(record, key, context);
 	if (kind !== "mechanical" && kind !== "naturalistic") {
 		throw new Error(`${context}.${key} must be "mechanical" or "naturalistic"`);
 	}
 	return kind;
+}
+
+function requireEditVariant(record: JsonRecord, key: string, context: string): "replace" | undefined {
+	const value = record[key];
+	if (value === undefined) return undefined;
+	if (value !== "replace") throw new Error(`${context}.${key} must be "replace" when provided`);
+	return value;
 }
 
 function requireBoolean(record: JsonRecord, key: string, context: string): boolean {
@@ -244,7 +268,7 @@ function assertAbsent(record: JsonRecord, key: string, context: string, kind: Gu
 function parseSuite(value: unknown): GuidanceSuite {
 	if (!isRecord(value) || !Array.isArray(value.cases)) throw new Error("cases file must contain a cases array");
 	const schemaVersion = requireInteger(value, "schemaVersion", "suite");
-	if (schemaVersion !== 2) throw new Error("suite.schemaVersion must be 2");
+	if (schemaVersion !== 3) throw new Error("suite.schemaVersion must be 3");
 	const ids = new Set<string>();
 	const cases = value.cases.map((entry, index): GuidanceCase => {
 		const context = `cases[${index}]`;
@@ -267,6 +291,7 @@ function parseSuite(value: unknown): GuidanceSuite {
 		const common = {
 			id,
 			kind,
+			surface: requireSurface(entry, "surface", context),
 			description: requireString(entry, "description", context),
 			holdout: requireBoolean(entry, "holdout", context),
 			prompt: requireString(entry, "prompt", context),
@@ -277,6 +302,8 @@ function parseSuite(value: unknown): GuidanceSuite {
 			allowedTools: requireStringArray(entry, "allowedTools", context, false),
 			expectedLanguage: "cljs" as const,
 			fixtureFiles: requireFixtureFiles(entry, "fixtureFiles", context),
+			expectedFixtureFiles: requireFixtureFiles(entry, "expectedFixtureFiles", context),
+			editVariant: requireEditVariant(entry, "editVariant", context),
 		};
 		if (kind === "mechanical") {
 			assertAbsent(entry, "forbiddenEvalCodeRegexes", context, kind);
@@ -312,6 +339,10 @@ function parseSuite(value: unknown): GuidanceSuite {
 		return {
 			...common,
 			kind,
+			requiredEvalCodeRegexes:
+				entry.requiredEvalCodeRegexes === undefined
+					? []
+					: requireRegexArray(entry, "requiredEvalCodeRegexes", context),
 			forbiddenEvalCodeRegexes: requireRegexArray(entry, "forbiddenEvalCodeRegexes", context),
 			evalCallCount: { min, max },
 		};
@@ -326,7 +357,7 @@ function parseSuite(value: unknown): GuidanceSuite {
 function parseBaseline(value: unknown): Baseline {
 	if (!isRecord(value)) throw new Error("baseline must be an object");
 	const schemaVersion = requireInteger(value, "schemaVersion", "baseline");
-	if (schemaVersion !== 2) throw new Error("baseline.schemaVersion must be 2");
+	if (schemaVersion !== 3) throw new Error("baseline.schemaVersion must be 3");
 	if (!Array.isArray(value.cases) || value.cases.length === 0) {
 		throw new Error("baseline must contain at least one case");
 	}
@@ -348,6 +379,8 @@ function parseBaseline(value: unknown): Baseline {
 		return {
 			id,
 			kind: requireCaseKind(entry, "kind", context),
+			surface: requireSurface(entry, "surface", context),
+			editVariant: requireEditVariant(entry, "editVariant", context),
 			prompt,
 			promptSha256,
 			finalText: requireText(entry, "finalText", context),
@@ -464,7 +497,7 @@ function printUsage(): void {
 Options:
   --model <model>             Required unless CLJS_CODEMODE_EVAL_MODEL is set
   --cases <path>              Case file (default: evals/cases.json)
-  --baseline <path>           Sanitized baseline (default: evals/baseline-v0.1.14.json)
+  --baseline <path>           Sanitized baseline (default: evals/baseline-v0.1.17.json)
   --extension <path>          Extension entry point (default: index.ts)
   --output <path>             Write sanitized results (repository paths must be under evals/)
   --record-baseline <version> Write a complete baseline to --output without comparing a prior baseline
@@ -641,8 +674,9 @@ function gradeCase(
 	exitStatus: number | null,
 	timedOut: boolean,
 	runtimeFailures: string[],
+	behaviorFailures: string[],
 ): { passed: boolean; failures: string[]; calls: SanitizedEvalCall[] } {
-	const failures = [...runtimeFailures];
+	const failures = [...runtimeFailures, ...behaviorFailures];
 	const calls = sanitizeCalls(collector);
 	if (timedOut) failures.push(`exceeded ${testCase.maxTimeMs}ms case limit`);
 	if (exitStatus !== 0) failures.push(`omp exit status was ${String(exitStatus)}`);
@@ -677,6 +711,12 @@ function gradeCase(
 		if (count < expected.min || count > expected.max) {
 			failures.push(`eval call count ${count}; expected within [${expected.min}, ${expected.max}]`);
 		}
+		const combinedCode = calls.map(call => call.args.code ?? "").join("\n");
+		for (const pattern of testCase.requiredEvalCodeRegexes) {
+			if (!new RegExp(pattern, "u").test(combinedCode)) {
+				failures.push(`eval source did not match required /${pattern}/u`);
+			}
+		}
 		for (const [index, call] of calls.entries()) {
 			for (const pattern of testCase.forbiddenEvalCodeRegexes) {
 				if (new RegExp(pattern, "u").test(call.args.code ?? "")) {
@@ -699,6 +739,35 @@ function gradeCase(
 	return { passed: failures.length === 0, failures, calls };
 }
 
+async function writeDirectSurfaceAdapter(fixture: string, extensionPath: string): Promise<string> {
+	const adapterPath = join(fixture, "direct-surface-extension.ts");
+	const extensionUrl = pathToFileURL(extensionPath).href;
+	await Bun.write(
+		adapterPath,
+		`import extension from ${JSON.stringify(extensionUrl)};
+
+export default function directSurfaceExtension(api: Record<string | symbol, unknown>): unknown {
+	const directApi = new Proxy(api, {
+		get(target, property, receiver) {
+			if (property !== "registerTool") {
+				const value = Reflect.get(target, property, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			}
+			return (tool: Record<string, unknown>) => {
+				const clone = Object.create(Object.getPrototypeOf(tool), Object.getOwnPropertyDescriptors(tool));
+				delete clone.codeModeActivation;
+				delete clone.setCodeModeBridge;
+				return (target.registerTool as (definition: Record<string, unknown>) => unknown)(clone);
+			};
+		},
+	});
+	return extension(directApi as never);
+}
+`,
+	);
+	return adapterPath;
+}
+
 async function runCase(testCase: GuidanceCase, model: string, extensionPath: string): Promise<CaseResult> {
 	const fixture = await mkdtemp(join(tmpdir(), "omp-cljs-guidance-"));
 	const started = performance.now();
@@ -713,6 +782,9 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 		}
 		const collector = createCollector();
 		const runtimeFailures: string[] = [];
+		const behaviorFailures: string[] = [];
+		const selectedExtensionPath =
+			testCase.surface === "direct" ? await writeDirectSurfaceAdapter(fixture, extensionPath) : extensionPath;
 		let exitStatus: number | null = null;
 		let timedOut = false;
 		try {
@@ -725,7 +797,7 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 					"--auto-approve",
 					"--no-extensions",
 					"-e",
-					extensionPath,
+					selectedExtensionPath,
 					"--tools",
 					testCase.exposedTools.join(","),
 					"--model",
@@ -734,7 +806,14 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 					String(Math.ceil(testCase.maxTimeMs / 1000)),
 					testCase.prompt,
 				],
-				{ cwd: fixture, stdout: "pipe", stderr: "pipe" },
+				{
+					cwd: fixture,
+					stdout: "pipe",
+					stderr: "pipe",
+					env: testCase.editVariant
+						? { ...Bun.env, PI_EDIT_VARIANT: testCase.editVariant }
+						: undefined,
+				},
 			);
 			let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
 			let terminationPromise: Promise<number> | undefined;
@@ -790,7 +869,18 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 		} catch (error) {
 			runtimeFailures.push(`failed to invoke omp: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		const grade = gradeCase(testCase, collector, exitStatus, timedOut, runtimeFailures);
+		if (testCase.expectedFixtureFiles) {
+			for (const [path, expected] of Object.entries(testCase.expectedFixtureFiles)) {
+				const target = join(fixture, path);
+				try {
+					const actual = await Bun.file(target).text();
+					if (actual !== expected) behaviorFailures.push(`${path} contents did not match the expected fixture state`);
+				} catch (error) {
+					behaviorFailures.push(`${path} could not be read after the case: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+		}
+		const grade = gradeCase(testCase, collector, exitStatus, timedOut, runtimeFailures, behaviorFailures);
 		const recordable =
 			runtimeFailures.length === 0 &&
 			!timedOut &&
@@ -802,6 +892,7 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 		return {
 			id: testCase.id,
 			kind: testCase.kind,
+			surface: testCase.surface,
 			promptSha256: sha256(testCase.prompt),
 			holdout: testCase.holdout,
 			toolNames,
@@ -829,6 +920,8 @@ function assertBaselineCompatible(baseline: Baseline, testCases: GuidanceCase[],
 	for (const testCase of testCases) {
 		const entry = baselineById.get(testCase.id);
 		if (!entry) throw new Error(`run case missing from baseline: ${testCase.id}`);
+		if (entry.surface !== testCase.surface) throw new Error(`baseline surface drift for case ${testCase.id}`);
+		if (entry.editVariant !== testCase.editVariant) throw new Error(`baseline edit-variant drift for case ${testCase.id}`);
 		if (entry.prompt !== testCase.prompt || entry.promptSha256 !== sha256(testCase.prompt)) {
 			throw new Error(`baseline prompt/hash drift for case ${testCase.id}`);
 		}
@@ -838,7 +931,7 @@ function assertBaselineCompatible(baseline: Baseline, testCases: GuidanceCase[],
 function buildRecordedBaseline(version: string, model: string, testCases: GuidanceCase[], results: CaseResult[]): Baseline {
 	const byId = new Map(results.map(result => [result.id, result]));
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		version,
 		model,
 		cases: testCases.map(testCase => {
@@ -847,6 +940,8 @@ function buildRecordedBaseline(version: string, model: string, testCases: Guidan
 			return {
 				id: testCase.id,
 				kind: result.kind,
+				surface: testCase.surface,
+				editVariant: testCase.editVariant,
 				prompt: testCase.prompt,
 				promptSha256: result.promptSha256,
 				finalText: result.finalResponse,
@@ -923,7 +1018,7 @@ async function main(): Promise<void> {
 		const result = await runCase(testCase, model, options.extensionPath);
 		results.push(result);
 		console.log(
-			`${result.passed ? "PASS" : "FAIL"} ${result.id}${result.holdout ? " [holdout]" : ""} eval=${result.evalCallCount} errors=${result.evalErrorCount} time=${result.durationMs}ms`,
+			`${result.passed ? "PASS" : "FAIL"} ${result.id} [${result.surface}]${result.holdout ? " [holdout]" : ""} eval=${result.evalCallCount} errors=${result.evalErrorCount} time=${result.durationMs}ms`,
 		);
 		if (!result.passed) console.log(`  ${result.failures.join("; ")}`);
 	}
@@ -954,7 +1049,7 @@ async function main(): Promise<void> {
 		if (options.outputPath) {
 			await mkdir(dirname(options.outputPath), { recursive: true });
 			const artifact = {
-				schemaVersion: 2,
+				schemaVersion: 3,
 				suite: suite.suite,
 				model,
 				baseline: { version: baseline.version, model: baseline.model, overlap: baselineOverlap },
