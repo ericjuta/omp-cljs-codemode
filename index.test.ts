@@ -599,6 +599,13 @@ describe("CLJS codemode plugin", () => {
 		expect(compileCljs(`(require '["clojure.set" :as set])`)).toContain("squint-cljs/src/squint/set.js");
 	});
 
+	it("rewrites quoted do-require imports without touching string literals", () => {
+		const code = compileCljs(`(do (require '["clojure.string" :as str]) (println "from 'clojure.string'"))`);
+		expect(code).toMatch(/import \* as str from "squint-cljs\/src\/squint\/string\.js"/);
+		expect(code).not.toMatch(/import \* as str from ['"]clojure\.string['"]/);
+		expect(code).toContain(`println("from 'clojure.string'")`);
+	});
+
 	it("compiles bare replace to squint_core.replace", () => {
 		expect(compileCljs('(replace "aa" "a" "b")')).toContain("squint_core.replace");
 	});

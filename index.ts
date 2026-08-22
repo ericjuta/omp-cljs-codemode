@@ -296,9 +296,9 @@ function rewriteCoreImport(compiled: CompileStringExResult): string {
 	const runtimeCoreImport = `import * as squint_core from ${JSON.stringify(import.meta.resolve("squint-cljs/core.js"))};\n`;
 	const rewrittenImports =
 		imports.slice(0, coreImportIndex) + runtimeCoreImport + imports.slice(coreImportIndex + CORE_IMPORT.length);
-	return rewriteStdlibSpecifiers(
-		`${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`,
-	);
+	const stitched = `${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`;
+	const { header, rest } = splitLeadingImports(stitched);
+	return `${rewriteStdlibSpecifiers(header)}${rest}`;
 }
 
 function injectPrelude(javascript: string): string {
