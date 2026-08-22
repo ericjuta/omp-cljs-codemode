@@ -1,10 +1,11 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "suite": "omp-cljs-codemode-guidance",
   "cases": [
     {
       "id": "observable-def",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "A top-level definition remains observable through the final expression.",
       "holdout": false,
       "prompt": "Use exactly one eval call with language cljs and exactly this two-form code: (def answer (* 6 7))\n(display answer). Return only the observed value.",
@@ -22,6 +23,7 @@
     {
       "id": "local-require",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "The model states the project-local namespace boundary without probing tools.",
       "holdout": false,
       "prompt": "Without using tools, answer exactly: No — project-local CLJS namespace resolution is unavailable.",
@@ -39,6 +41,7 @@
     {
       "id": "persistent-def",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "Two CLJS cells share retained JS-backed state until reset.",
       "holdout": false,
       "prompt": "Use eval language cljs in exactly two calls. First use exactly (def guidance-probe 41) followed by guidance-probe, with reset true. Second use exactly (+ guidance-probe 1), with reset false. Return only the second observed value.",
@@ -56,6 +59,7 @@
     {
       "id": "async-read",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "One CLJS cell awaits an OMP package read through the tool bridge.",
       "holdout": false,
       "prompt": "Use exactly one eval call with language cljs and exactly this code: (get (js/JSON.parse (js/await (js/read \"package.json\"))) \"name\"). Return only the observed value.",
@@ -73,6 +77,7 @@
     {
       "id": "dynamic-hyphenated-tool",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "Dynamic lookup reaches a hyphenated tool name without identifier syntax.",
       "holdout": false,
       "prompt": "Use exactly one eval call with language cljs and exactly this code: (try (js/await ((aget tool \"not-installed-tool\") {})) (catch :default _ \"dynamic-bridge-ok\")). Return only the observed value.",
@@ -90,6 +95,7 @@
     {
       "id": "reader-discard-final",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "The exact host path preserves Squint discard-reader final-value semantics.",
       "holdout": false,
       "prompt": "Use exactly one eval call with language cljs and the exact code 42 #_ 99. Do not wrap, reorder, or add forms. Return only the observed value.",
@@ -107,6 +113,7 @@
     {
       "id": "nested-async-transform",
       "kind": "mechanical",
+      "surface": "direct",
       "description": "A nested asynchronous file read and transformation remains an exact integration case.",
       "holdout": false,
       "prompt": "Use exactly one eval call with language cljs and exactly this code: (js/await (.then (js/read \"package.json\") (fn [contents] (.toUpperCase (get (js/JSON.parse contents) \"name\"))))). Return only the observed value.",
@@ -124,6 +131,7 @@
     {
       "id": "natural-package-name-read",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "A package metadata question selects a repository read rather than evaluation.",
       "holdout": false,
       "prompt": "What is the value of the name field in package.json? Reply with only that value.",
@@ -139,6 +147,7 @@
     {
       "id": "natural-repository-search",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "A repository discovery question selects search instead of evaluation.",
       "holdout": false,
       "prompt": "Which file declares the port the HTTP server listens on? Reply with only its relative path.",
@@ -159,6 +168,7 @@
     {
       "id": "natural-cross-cell-persistence",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "A later cell must reuse a value retained by an earlier cell instead of recomputing it.",
       "holdout": false,
       "prompt": "In one ClojureScript evaluation, calculate and retain the product of 45 and 97. In a later evaluation, use that retained value to report its last two digits. Reply with only the final number.",
@@ -174,6 +184,7 @@
     {
       "id": "natural-cljs-atom-printing",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "The model obtains and communicates ClojureScript-shaped atom rendering.",
       "holdout": false,
       "prompt": "Use the ClojureScript evaluator to create an atom that holds 7, then tell me how ClojureScript prints it.",
@@ -189,6 +200,7 @@
     {
       "id": "natural-async-package-name",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "An asynchronous package lookup completes with at most one recovery attempt.",
       "holdout": false,
       "prompt": "Using one ClojureScript evaluation, retrieve the package name from package.json and reply with only that name.",
@@ -204,6 +216,7 @@
     {
       "id": "natural-package-dependency-total",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "A sealed in-cell transformation reads, parses, and aggregates package metadata with at most one recovery attempt.",
       "holdout": true,
       "prompt": "Read package.json in one ClojureScript evaluation, then report only the total number of runtime and development dependencies declared there.",
@@ -222,6 +235,7 @@
     {
       "id": "natural-retain-when-bash-available",
       "kind": "naturalistic",
+      "surface": "direct",
       "description": "Retained cljs cells are used even when bash is available.",
       "holdout": true,
       "prompt": "Keep the product of 45 and 97 in the ClojureScript evaluator. In a later evaluation, use that retained value and reply with only its last two digits.",
@@ -236,6 +250,38 @@
       ],
       "maxEvalErrors": 0,
       "expectedLanguage": "cljs"
+    },
+    {
+      "id": "natural-code-mode-file-edit",
+      "kind": "naturalistic",
+      "surface": "code-mode",
+      "description": "A natural file-edit goal succeeds through hidden read and edit declarations without raw process or filesystem APIs.",
+      "holdout": false,
+      "prompt": "Change note.txt from before to after, then report only the final file contents.",
+      "maxTimeMs": 60000,
+      "expectedFinalRegex": "^after$",
+      "exposedTools": ["eval", "read", "edit"],
+      "allowedTools": ["eval"],
+      "evalCallCount": { "min": 1, "max": 3 },
+      "requiredEvalCodeRegexes": [
+        "aget\\s+tool\\s+\\\\?\"read\\\\?\"",
+        "aget\\s+tool\\s+\\\\?\"edit\\\\?\""
+      ],
+      "forbiddenEvalCodeRegexes": [
+        "node:(?:fs|child_process)",
+        "child_process",
+        "(?:js/require|require)\\s+\\\\?\"(?:node:)?fs\\\\?\"",
+        "(?:readFileSync|writeFileSync)",
+        "js/(?:read|write)\\b",
+        "(?:^|[^A-Za-z0-9_])Bun\\.(?:file|write)",
+        "\\(sh\\s",
+        "\\(write\\s"
+      ],
+      "maxEvalErrors": 0,
+      "expectedLanguage": "cljs",
+      "fixtureFiles": { "note.txt": "before\n" },
+      "expectedFixtureFiles": { "note.txt": "after\n" },
+      "editVariant": "replace"
     }
   ]
 }

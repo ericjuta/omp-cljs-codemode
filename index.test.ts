@@ -24,9 +24,10 @@ type EvalExecute = (
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => (...args: never[]) => Promise<unknown>;
 
-async function evaluateCljsCell(source: string): Promise<unknown> {
+async function evaluateCljsCell(source: string, tool: Record<string, unknown> = {}): Promise<unknown> {
 	const code = compileCljs(source).replace(/^import .+;\n/gm, "");
-	return await new AsyncFunction(code)();
+	const squintCore = (await import("squint-cljs/core.js")) as Record<string, unknown>;
+	return await new AsyncFunction("tool", "squint_core", code)(tool as never, squintCore as never);
 }
 
 async function executeWith(
@@ -81,15 +82,44 @@ describe("CLJS codemode plugin", () => {
 		expect(parameters.properties.timeout).toBeDefined();
 	});
 
-	it("fails Code Mode transport closed without a native eval capability", () => {
+	it("fails Code Mode transport closed until the host supplies the bridge", () => {
 		const tool = createCljsEvalTool(fakePi);
 		expect(tool.codeModeActivation).toBe("all-models");
 		expect((tool.supportsCodeModeTransport as () => boolean)()).toBe(false);
 	});
 
-	it("activates Code Mode for every model through the native eval bridge", () => {
-		const tool = createCljsEvalTool({ ...fakePi, hasNativeTool: name => name === "eval" });
+	it("activates Code Mode only after the host supplies the live bridge", () => {
+		const tool = createCljsEvalTool(fakePi);
+		expect((tool.supportsCodeModeTransport as () => boolean)()).toBe(false);
+
+		(tool.setCodeModeBridge as (bridge: { getDeclarations(): string | undefined }) => void)({
+			getDeclarations: () => "  read(args: { path: string }): Promise<unknown>;",
+		});
 		expect((tool.supportsCodeModeTransport as () => boolean)()).toBe(true);
+	});
+
+	it("renders live hidden-tool declarations only while Code Mode is active", () => {
+		let declarations: string | undefined;
+		const tool = createCljsEvalTool(fakePi);
+		(tool.setCodeModeBridge as (bridge: { getDeclarations(): string | undefined }) => void)({
+			getDeclarations: () => declarations,
+		});
+		const directDescription = String(tool.description);
+		expect(directDescription).not.toContain("Live bridged tool declarations");
+
+		declarations = [
+			"  read(args: { path: string }): Promise<unknown>;",
+			"  edit(args: { path: string; oldText: string; newText: string }): Promise<unknown>;",
+		].join("\n");
+		const codeModeDescription = String(tool.description);
+		expect(codeModeDescription).toContain("Code Mode is active");
+		expect(codeModeDescription).toContain(declarations);
+		expect(codeModeDescription).toContain('(js-await ((aget tool "read") (clj->js {:path "package.json"})))');
+		expect(codeModeDescription).toContain("Promise.all returns a JavaScript array");
+		expect(codeModeDescription).toContain("vec, aget, or (range (.-length results))");
+		expect(codeModeDescription).toContain("Do not use array-seq");
+		expect(codeModeDescription).toContain("does not expand ~");
+		expect(codeModeDescription).toContain("cannot read directories");
 	});
 
 	it("compiles and executes nested async CLJS expressions", async () => {
@@ -97,6 +127,23 @@ describe("CLJS codemode plugin", () => {
 			"(def result (let [value (js/await (js/Promise.resolve 7))] value))\nresult",
 		);
 		expect(value).toBe(7);
+	});
+
+	it("handles bridged Promise.all results with vec, aget, and indexed range access", async () => {
+		const tool = {
+			read: async (args: { path: string }) => ({ path: args.path }),
+		};
+		const value = await evaluateCljsCell(
+			`(let [results (js-await (js/Promise.all #js [
+  ((aget tool "read") (clj->js {:path "a.txt"}))
+  ((aget tool "read") (clj->js {:path "b.txt"}))]))]
+  [(mapv #(aget % "path") (vec results))
+   (aget (aget results 0) "path")
+   (mapv (fn [i] (aget (aget results i) "path"))
+         (range (.-length results)))])`,
+			tool,
+		);
+		expect(value).toEqual([["a.txt", "b.txt"], "a.txt", ["a.txt", "b.txt"]]);
 	});
 
 	it("returns the effective final top-level form", async () => {
@@ -244,8 +291,8 @@ describe("CLJS codemode plugin", () => {
 			expect(() => compileCljs(code)).not.toThrow();
 		}
 		expect(description).toContain("Use cljs for retained cells, in-cell transforms, and JavaScript interop.");
-		expect(description).toContain("Prefer host read, grep, and bash");
-		expect(description).toContain("If they return empty or fail");
+		expect(description).toContain("Use host read, grep, and bash directly when they are exposed");
+		expect(description).toContain("If a direct tool returns empty or fails");
 		expect(description).toContain("a cljs cell with JavaScript interop is a fallback");
 		expect(description).not.toContain("child_process");
 		expect(description).toContain("direct Squint");
@@ -264,7 +311,7 @@ describe("CLJS codemode plugin", () => {
 		expect(description).not.toContain('Prefer (js-await (js/read "package.json"))');
 		expect(description).not.toContain('(js/read "package.json")');
 		expect(description).toContain("(js-await (js/Promise.resolve 3))");
-		expect(description).toContain('(js-await ((aget tool "tool-name") {:arg "value"}))');
+		expect(description).toContain('(js-await ((aget tool "tool-name") (clj->js {:arg "value"})))');
 		expect(description).toContain("There is no js/bash helper");
 		expect(description).toContain("Multiple top-level forms execute in order");
 		expect(description).toContain("output(...)");
@@ -278,6 +325,8 @@ describe("CLJS codemode plugin", () => {
 		expect(description).toContain('host bash tool via tool["bash"]');
 		expect(description).toContain("truncated CLJS-shaped view");
 		expect(description).toContain("There is no env helper");
+		expect(description).toContain("eval-local read(path, offset?, limit?) helper reads regular files only");
+		expect(description).toContain("It does not expand ~ and does not support directory reads");
 		expect(description).toContain("Do not expose host environment from a cell");
 		expect(description).not.toContain("write(), env(), output()");
 		expect(description).not.toContain("process.env");

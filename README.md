@@ -14,23 +14,27 @@ model eval call (language: "cljs")
   -> return the native eval result
 ```
 
-The sole model-visible `eval` tool schema accepts `language: "cljs"`. On OMP 17.2.12 or newer, native JavaScript must remain enabled as the hidden execution backend; it is not exposed as a model-selectable language by this plugin. Unrestricted Task/scout sessions that omit native `eval` from their allowlist still receive this extension tool via OMP's extension always-include, but execution fails closed before compile. Restricted hosts (`restrictToolNames`) do not load registered extensions. If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.
+The sole model-visible `eval` tool schema accepts `language: "cljs"`. OMP 18.0.0 or newer is required, with native JavaScript enabled as the hidden execution backend; JavaScript is not exposed as a model-selectable language by this plugin. All-model Code Mode additionally requires an OMP host that supplies live hidden-tool declarations to replacement eval tools. On hosts without that bridge contract, the plugin reports Code Mode transport unavailable, so OMP keeps the direct tool surface instead of hiding tools without guidance.
+
+Unrestricted Task/scout sessions that omit native `eval` from their allowlist still receive this extension tool via OMP's extension always-include, but execution fails closed before compile. Restricted hosts (`restrictToolNames`) do not load registered extensions. If eval reports that the native backend is unavailable, stop. Do not retry eval. Use an available direct tool such as read, grep, or glob instead.
 
 ## Install and operate
 
-The repository is public. Install an immutable release directly over HTTPS; no GitHub credentials are required:
+The repository is public. The all-model bridge changes in this checkout are unreleased; verify them with a linked checkout and OMP 18. The command below installs the current public v0.1.17 release and does not contain the later checkout changes.
+
+Install that immutable public release directly over HTTPS; no GitHub credentials are required:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.16'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
 ```
 
 When upgrading from v0.1.1, install the new identity first. Never uninstall the working historical package before the target release installs successfully:
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.16'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
 ```
 
-After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.16`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
+After success, run `omp plugin list`. It must show `@ericjuta/omp-cljs-codemode@0.1.17`. If the historical identity is still listed, remove it only now; skip these cleanup commands when it is already absent:
 
 ```sh
 omp plugin disable @t-y-b-b/omp-cljs-codemode
@@ -69,7 +73,7 @@ omp --no-session --mode json --auto-approve \
 
 ## Use
 
-Use cljs for retained cells, in-cell transforms, and JavaScript interop. Prefer host `read`, `grep`, and `bash` for ordinary file, search, and shell work when those tools succeed. If they return empty or fail, a cljs cell with JavaScript interop is a fallback.
+Use cljs for retained cells, in-cell transforms, and JavaScript interop. Use host `read`, `grep`, and `bash` directly when they are exposed. In Code Mode, the eval description lists the current hidden tool schemas; invoke those tools through the CLJS `tool` bridge. If a direct tool returns empty or fails, a cljs cell with JavaScript interop is a fallback.
 
 One tool call is one Squint cell:
 
@@ -107,19 +111,21 @@ Squint has no `js->clj`; `clj->js` works. Shape JavaScript values into CLJS with
 
 Cells inherit the native JS eval worker's environment (`process.env` / `Bun.env`). Sanitizing that worker env does not cover `sh` or other delegated tools. Do not dump process env from a cell.
 
-Call a registered tool through the proxy:
+Call a registered tool through the proxy with valid Squint interop syntax:
 
 ```clojure
-(js-await (.read tool {:path "package.json"}))
+(js-await ((aget tool "read") (clj->js {:path "package.json"})))
 ```
 
-For a tool name that is not a valid CLJS identifier, use dynamic lookup:
+The same dynamic lookup works for names that are not valid CLJS identifiers:
 
 ```clojure
-(js-await ((aget tool "my-hyphenated-tool") {:arg "value"}))
+(js-await ((aget tool "my-hyphenated-tool") (clj->js {:arg "value"})))
 ```
 
-Tool bridge calls preserve the native tool's permissions and side effects. `(js-await (js/read path))` returns raw file text from the JS helper; `tool.read(...)` returns the normal OMP tool response shape. Neither replaces the host `read` tool.
+For independent bridged calls, `js/Promise.all` returns a JavaScript array. Use `vec`, `aget`, or an indexed `(range (.-length results))`; `array-seq` is not supported.
+
+Tool bridge calls preserve the native tool's permissions and side effects. The eval-local `(js-await (js/read path))` helper returns raw regular-file text, does not expand `~`, and cannot read directories. Bridged `tool.read` returns the normal OMP tool response shape and follows the live host schema. Neither replaces a directly exposed host `read` tool.
 
 ## Boundary: project-local CLJS namespaces
 
@@ -144,13 +150,13 @@ Run the guidance suite with an explicit model (the environment variable is equiv
 
 ```sh
 bun run eval:guidance --model provider/model \
-  --baseline evals/baseline-v0.1.14.json \
-  --output evals/results/candidate-v0.1.16.json
+  --baseline evals/baseline-v0.1.17.json \
+  --output evals/results/candidate-unreleased.json
 
 CLJS_CODEMODE_EVAL_MODEL=provider/model bun run eval:guidance
 ```
 
-Cases are one of two kinds. A `mechanical` case dictates exact source and pins each call's code, result, and reset; it guards the compile and delegation path. A `naturalistic` case states only a user goal and grades the observed outcome, call-count bounds, tool choice, eval errors, and `forbiddenEvalCodeRegexes`; it is what measures whether model-visible guidance actually works. A case may materialize its own `fixtureFiles` so it never depends on the surrounding repository.
+Cases are one of two kinds. A `mechanical` case dictates exact source and pins each call's code, result, and reset; it guards the compile and delegation path. A `naturalistic` case states only a user goal and grades the observed outcome, call-count bounds, tool choice, eval errors, and required or forbidden eval-code patterns; it is what measures whether model-visible guidance actually works. Each case declares either the fallback `direct` surface or the live `code-mode` surface. A case may materialize `fixtureFiles`, assert `expectedFixtureFiles`, and select the deterministic `replace` edit variant without depending on the surrounding repository or operator settings.
 
 Sealed holdouts are skipped by default. Run them deliberately:
 
@@ -163,8 +169,8 @@ Record a baseline for a given checkout against the exact current case prompts wi
 ```sh
 bun run eval:guidance --model provider/model \
   --extension /path/to/pristine/index.ts \
-  --record-baseline 0.1.14 \
-  --output evals/baseline-v0.1.14.json
+  --record-baseline 0.1.17 \
+  --output evals/baseline-v0.1.17.json
 ```
 
 Recorded baselines persist each prompt and its SHA-256 digest. Normal comparisons fail closed before model execution when the model, run-case IDs, prompt text, or prompt hashes differ; extra baseline entries for skipped holdouts are tolerated. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads the selected checkout explicitly with only the tools that case exposes. Optional result files contain only sanitized eval arguments/results, prompt hashes, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.

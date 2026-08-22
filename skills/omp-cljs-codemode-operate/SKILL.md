@@ -17,17 +17,19 @@ Three things are not the same:
 
 Checkout tests and `bun run check` are not live proof.
 
-Current public install:
+Current public install (v0.1.17 does not contain unreleased all-model bridge changes from a later checkout):
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.16'
+omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.17'
 ```
 
-`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.16`. Then start a new OMP process.
+`omp plugin list` must show `@ericjuta/omp-cljs-codemode@0.1.17`. Then start a new OMP process.
 
 ## Wrapper contract
 
 `@ericjuta/omp-cljs-codemode` is a native-`eval` wrapper. It compiles Squint, then delegates with `ctx.invokeTool({ ...params, language: "js", code })`. OMP attaches `invokeTool` only when a same-name native built-in exists.
+
+All-model Code Mode also requires the host to provide live hidden-tool declarations to the replacement eval. The plugin does not copy OMP schemas. Without that host capability, it reports Code Mode transport unavailable and OMP must keep direct tools exposed. OMP 18.0.0 or newer is required; the older ambient host cannot soundly resolve supported non-core Squint imports such as `clojure.string`.
 
 Do **not**:
 
@@ -68,7 +70,7 @@ omp --no-session --mode json --auto-approve --tools eval --model "$CLJS_CODEMODE
 
 Quote completed `eval` tool texts, not the child model's summary.
 
-Expected printer lines on 0.1.16:
+Expected printer lines on 0.1.17:
 
 - `() (1 2 3) [] [1 2 3] (1 2)`
 - `#atom {:n 1}`
