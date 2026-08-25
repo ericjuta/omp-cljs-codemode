@@ -589,21 +589,37 @@ describe("CLJS codemode plugin", () => {
 		expect(code).not.toContain("squint_core.replace");
 	});
 
-	it("resolves clojure.string requires to Squint's bundled module", () => {
-		const bare = compileCljs("(require '[clojure.string :as str])");
-		expect(bare).toContain("squint-cljs/src/squint/string.js");
-		expect(bare).not.toContain("from 'clojure.string'");
-		const quoted = compileCljs(`(require '["clojure.string" :as str])`);
-		expect(quoted).toContain("squint-cljs/src/squint/string.js");
-		expect(quoted).not.toContain("from 'clojure.string'");
-		expect(compileCljs(`(require '["clojure.set" :as set])`)).toContain("squint-cljs/src/squint/set.js");
+	it("resolves every supported clojure.string require shape", () => {
+		const stringModule = JSON.stringify(import.meta.resolve("squint-cljs/src/squint/string.js"));
+		const requireShapes = [
+			"(require '[clojure.string :as str])",
+			"(require '[clojure.string :refer [join]])",
+			"(require '[clojure.string :refer-macros [join]])",
+						`(require '["clojure.string" :as str])`,
+		];
+		for (const source of requireShapes) {
+			const code = compileCljs(source);
+			expect(code).toContain(stringModule);
+			expect(code).not.toMatch(/(?:from\s+|import\s*(?:\(\s*)?)["']squint-cljs\//);
+			expect(code).not.toContain("from 'clojure.string'");
+		}
+		expect(compileCljs(`(require '["clojure.set" :as set])`)).toContain(`from ${JSON.stringify(import.meta.resolve("squint-cljs/src/squint/set.js"))}`);
+	});
+	it("resolves static and dynamic Squint module specifiers", () => {
+		const htmlModule = JSON.stringify(import.meta.resolve("squint-cljs/src/squint/html.js"));
+		const staticImport = compileCljs('#html [:div "Hello"]');
+		expect(staticImport).toContain(`from ${htmlModule}`);
+		expect(staticImport).not.toContain("from 'squint-cljs/src/squint/html.js'");
+		const dynamicImport = compileCljs('(js/import "squint-cljs/src/squint/html.js")');
+		expect(dynamicImport).toContain(`import(${htmlModule})`);
+		expect(dynamicImport).not.toContain('import("squint-cljs/src/squint/html.js")');
 	});
 
 	it("rewrites quoted do-require imports without touching string literals", () => {
-		const code = compileCljs(`(do (require '["clojure.string" :as str]) (println "from 'clojure.string'"))`);
-		expect(code).toMatch(/import \* as str from "squint-cljs\/src\/squint\/string\.js"/);
+		const code = compileCljs(`(do (require '["clojure.string" :as str]) (println "import('squint-cljs/src/squint/html.js')"))`);
+		expect(code).toContain(`import * as str from ${JSON.stringify(import.meta.resolve("squint-cljs/src/squint/string.js"))}`);
 		expect(code).not.toMatch(/import \* as str from ['"]clojure\.string['"]/);
-		expect(code).toContain(`println("from 'clojure.string'")`);
+		expect(code).toContain(`println("import('squint-cljs/src/squint/html.js')")`);
 	});
 
 	it("compiles bare replace to squint_core.replace", () => {

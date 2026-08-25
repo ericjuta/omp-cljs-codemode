@@ -39,10 +39,11 @@ type CljsEvalParams = {
 };
 
 const CORE_IMPORT = "import * as squint_core from 'squint-cljs/core.js';\n";
-const SQUINT_STDLIB_SPECIFIERS = [
-	["clojure.string", "squint-cljs/src/squint/string.js"],
-	["clojure.set", "squint-cljs/src/squint/set.js"],
-] as const;
+const SQUINT_PACKAGE_PREFIX = "squint-cljs/";
+const SQUINT_NAMESPACE_IMPORTS = {
+	"clojure.string": "squint-cljs/src/squint/string.js",
+	"clojure.set": "squint-cljs/src/squint/set.js",
+} as const;
 
 export const ENV_HELPER_MESSAGE =
 	"Host environment is not available through eval helpers. Do not dump environment from a cell.";
@@ -273,17 +274,64 @@ function splitLeadingImports(source: string): { header: string; rest: string } {
 	return { header: lines.slice(0, index).join(""), rest: lines.slice(index).join("") };
 }
 
-function rewriteStdlibSpecifiers(imports: string): string {
-	let next = imports;
-	for (const [specifier, target] of SQUINT_STDLIB_SPECIFIERS) {
-		const rewritten = `from ${JSON.stringify(target)}`;
-		next = next.replaceAll(`from '${specifier}'`, rewritten);
-		next = next.replaceAll(`from "${specifier}"`, rewritten);
-	}
-	return next;
+function hasJsKeywordBefore(javascript: string, index: number, keyword: string): boolean {
+	let end = index;
+	while (end > 0 && /\s/.test(javascript[end - 1] ?? "")) end -= 1;
+	const start = end - keyword.length;
+	return start >= 0 && javascript.slice(start, end) === keyword && !isJsWordChar(javascript[start - 1]);
 }
 
-function rewriteCoreImport(compiled: CompileStringExResult): string {
+function isModuleSpecifierContext(javascript: string, quoteIndex: number): boolean {
+	let tokenEnd = quoteIndex;
+	while (tokenEnd > 0 && /\s/.test(javascript[tokenEnd - 1] ?? "")) tokenEnd -= 1;
+	if (javascript[tokenEnd - 1] === "(") {
+		return hasJsKeywordBefore(javascript, tokenEnd - 1, "import");
+	}
+	return hasJsKeywordBefore(javascript, tokenEnd, "from") || hasJsKeywordBefore(javascript, tokenEnd, "import");
+}
+
+function rewriteSquintModuleSpecifiers(javascript: string): string {
+	let rewritten = "";
+	let copiedThrough = 0;
+	let index = 0;
+	while (index < javascript.length) {
+		if (javascript[index] === "/" && javascript[index + 1] === "/") {
+			index = skipJsLineComment(javascript, index);
+			continue;
+		}
+		if (javascript[index] === "/" && javascript[index + 1] === "*") {
+			index = skipJsBlockComment(javascript, index);
+			continue;
+		}
+		const quote = javascript[index];
+		if (quote !== "'" && quote !== "\"" && quote !== "`") {
+			index += 1;
+			continue;
+		}
+		const end = skipJsString(javascript, index);
+		if (
+			quote !== "`" &&
+			javascript[end - 1] === quote &&
+			isModuleSpecifierContext(javascript, index)
+		) {
+			const specifier = javascript.slice(index + 1, end - 1);
+			const target = specifier.startsWith(SQUINT_PACKAGE_PREFIX)
+				? specifier
+				: Object.hasOwn(SQUINT_NAMESPACE_IMPORTS, specifier)
+					? SQUINT_NAMESPACE_IMPORTS[specifier as keyof typeof SQUINT_NAMESPACE_IMPORTS]
+					: undefined;
+			if (target !== undefined) {
+				rewritten += javascript.slice(copiedThrough, index);
+				rewritten += JSON.stringify(import.meta.resolve(target));
+				copiedThrough = end;
+			}
+		}
+		index = end;
+	}
+	return copiedThrough === 0 ? javascript : rewritten + javascript.slice(copiedThrough);
+}
+
+function rewriteSquintImports(compiled: CompileStringExResult): string {
 	const imports = compiled.imports ?? "";
 	const coreImportIndex = imports.indexOf(CORE_IMPORT);
 	if (coreImportIndex < 0 || imports.indexOf(CORE_IMPORT, coreImportIndex + CORE_IMPORT.length) >= 0) {
@@ -293,12 +341,7 @@ function rewriteCoreImport(compiled: CompileStringExResult): string {
 	if (original !== compiled.javascript) {
 		throw new Error("Squint compiler returned an unsupported output layout");
 	}
-	const runtimeCoreImport = `import * as squint_core from ${JSON.stringify(import.meta.resolve("squint-cljs/core.js"))};\n`;
-	const rewrittenImports =
-		imports.slice(0, coreImportIndex) + runtimeCoreImport + imports.slice(coreImportIndex + CORE_IMPORT.length);
-	const stitched = `${compiled.pragmas ?? ""}${rewrittenImports}${compiled.body ?? ""}${compiled.exports ?? ""}`;
-	const { header, rest } = splitLeadingImports(stitched);
-	return `${rewriteStdlibSpecifiers(header)}${rest}`;
+	return rewriteSquintModuleSpecifiers(original);
 }
 
 function injectPrelude(javascript: string): string {
@@ -422,7 +465,7 @@ function compileString(source: string): CompileStringExResult {
  */
 export function compileCljs(source: string): string {
 	const compiled = compileString(source);
-	const rewritten = rewriteCoreImport(compiled);
+	const rewritten = rewriteSquintImports(compiled);
 	assertNoAwaitInSyncFn(rewritten);
 	return injectPrelude(rewritten);
 }

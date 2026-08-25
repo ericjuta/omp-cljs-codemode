@@ -9,7 +9,7 @@ The path is direct; Vite is not involved:
 ```text
 model eval call (language: "cljs")
   -> Squint compileStringEx(..., { context: "return", async: true, "elide-exports": true })
-  -> rewrite the Squint core import to this package's pinned runtime
+  -> rewrite generated Squint package imports to this package's pinned runtime URLs
   -> delegate the generated JavaScript to OMP's native eval tool
   -> return the native eval result
 ```

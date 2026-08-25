@@ -29,14 +29,14 @@ omp plugin install 'git+https://github.com/ericjuta/omp-cljs-codemode.git#v0.1.1
 
 `@ericjuta/omp-cljs-codemode` is a native-`eval` wrapper. It compiles Squint, then delegates with `ctx.invokeTool({ ...params, language: "js", code })`. OMP attaches `invokeTool` only when a same-name native built-in exists.
 
-All-model Code Mode also requires the host to provide live hidden-tool declarations to the replacement eval. The plugin does not copy OMP schemas. Without that host capability, it reports Code Mode transport unavailable and OMP must keep direct tools exposed. OMP 18.0.0 or newer is required; the older ambient host cannot soundly resolve supported non-core Squint imports such as `clojure.string`.
+All-model Code Mode also requires the host to provide live hidden-tool declarations to the replacement eval. The plugin does not copy OMP schemas. Without that host capability, it reports Code Mode transport unavailable and OMP must keep direct tools exposed. OMP 18.0.0 or newer is required. The plugin resolves compiler-generated static and dynamic `squint-cljs/` imports to absolute URLs pinned to its installed runtime.
 
 Do **not**:
 
 - execute compiled JS inside the plugin
 - polyfill `display`/`read`/`tool` locally beyond the tiny `pr`/`sh`/`bash` prelude injected into compiled JS
 - seed native `eval` into scout or other explicit read-only allowlists
-- regex-rewrite CLJS source or `import.meta.resolve` non-core Squint imports
+- regex-rewrite CLJS source or user string literals; module rewriting is restricted to generated import specifiers
 - rewrite model guidance to sell utility
 
 Scout allows only `read, grep, glob, web_search`. On unrestricted sessions the SDK still auto-includes extension tools, so cljs `eval` can appear without a JS backend. Restricted hosts (`restrictToolNames`) do not load registered extensions.
