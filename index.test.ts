@@ -183,6 +183,8 @@ describe("CLJS codemode plugin", () => {
 		expect(() => compileCljs("(defn)")).toThrow(/defn needs a name symbol/);
 		expect(() => compileCljs("(defn foo)")).toThrow(/parameter vector/);
 		expect(() => compileCljs("(let x 1)")).toThrow(/vector or sequential form/);
+		expect(() => compileCljs("(cond 1)")).toThrow(/cond requires an even number of forms/);
+		expect(() => compileCljs("(dotimes)")).toThrow(/binding vector syntax/);
 		expect(() => compileCljs("#?")).toThrow(/keyword feature/);
 	});
 
@@ -390,6 +392,10 @@ describe("CLJS codemode plugin", () => {
 		).resolves.toBe("ok");
 		expect(bashCalls).toEqual([{ command: "git status --short" }]);
 		await expect(evaluateCljsCell('(js-await (sh "true"))', {})).rejects.toThrow(MISSING_BASH_MESSAGE);
+		const runShWithoutTool = new AsyncFunction(
+			compileCljs('(js-await (sh "true"))').replace(/^import .+;\n/gm, ""),
+		) as () => Promise<unknown>;
+		await expect(runShWithoutTool()).rejects.toThrow(MISSING_BASH_MESSAGE);
 		await expect(
 			evaluateCljsCell('(js-await (sh "true"))', {
 				bash: async () => {
@@ -423,6 +429,127 @@ describe("CLJS codemode plugin", () => {
 		expect(text).toContain("#function");
 		expect(text).toContain(" ...]");
 		expect(text).not.toContain(" 32]");
+	});
+
+	it("prints promises opaquely without exposing internals", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs("(pr (js/Promise.resolve 1))").replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["#js/Promise"]);
+	});
+
+	it("prints a fake Promise constructor-name object with its fields", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs('(pr (js* "({constructor: {name: \\"Promise\\"}, token: \\"visible\\"})"))').replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(['{:constructor {:name "Promise"} :token "visible"}']);
+	});
+
+	it("prints a Promise subclass opaquely", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs('(pr (js* "(new (class extends Promise {})(function (resolve) { resolve(1); }))"))').replace(
+				/^import .+;\n/gm,
+				"",
+			),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["#js/Promise"]);
+	});
+
+	it("prints a promise with an overridden constructor opaquely", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs('(pr (js* "(() => { const p = Promise.resolve(1); p.constructor = function Fake() {}; return p; })()"))').replace(
+				/^import .+;\n/gm,
+				"",
+			),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["#js/Promise"]);
+	});
+
+	it("prints a Promise subclass named Atom as a promise", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs('(pr (js* "(new (class Atom extends Promise {})(function (resolve) { resolve(1); }))"))').replace(
+				/^import .+;\n/gm,
+				"",
+			),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["#js/Promise"]);
+	});
+
+	it("prints a promise whose constructor getter throws", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs(
+				'(do (pr (js* "Object.defineProperty(Promise.resolve(1), \\"constructor\\", { get() { throw new Error(\\"constructor getter\\"); } })")) nil)',
+			).replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(["#js/Promise"]);
+	});
+
+	it("prints Object.create(Promise.prototype) with its fields", async () => {
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			compileCljs('(do (pr (js* "Object.create(Promise.prototype, { token: { value: \\"visible\\", enumerable: true } })")) nil)').replace(
+				/^import .+;\n/gm,
+				"",
+			),
+		) as (display: (value: unknown) => void) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		});
+		expect(displayed).toEqual(['{:token "visible"}']);
+	});
+
+	it("prints a cross-realm promise opaquely when the host can create one", async () => {
+		const vm = (process as { getBuiltinModule?(name: string): { runInNewContext?(code: string): unknown } }).getBuiltinModule?.(
+			"node:vm",
+		);
+		let crossRealm: unknown;
+		try {
+			crossRealm = vm?.runInNewContext?.("Promise.resolve(1)");
+		} catch {
+			return;
+		}
+		if (crossRealm == null) return;
+		const displayed: unknown[] = [];
+		const run = new AsyncFunction(
+			"display",
+			"value",
+			compileCljs("(do (pr value) nil)").replace(/^import .+;\n/gm, ""),
+		) as (display: (value: unknown) => void, value: unknown) => Promise<unknown>;
+		await run(next => {
+			displayed.push(next);
+		}, crossRealm);
+		expect(displayed).toEqual(["#js/Promise"]);
 	});
 
 	it("truncates nested objects at CLJS_PRINT_DEPTH", async () => {
@@ -568,6 +695,31 @@ describe("CLJS codemode plugin", () => {
 		expect(() => compileCljs("(defn ^:async sneak [path] (js/await (js/read path)))\n(sneak \"x\")")).not.toThrow();
 	});
 
+	it("rejects await in function parameter initializers", () => {
+		expect(() => compileCljs('(js* "async function f(value = await promise) {}")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+	});
+
+	it("rejects await in class field initializers", () => {
+		expect(() => compileCljs("(defclass Example (field value (js-await promise)))")).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+	});
+
+	it("rejects await in private class field initializers", () => {
+		expect(() => compileCljs('(js* "class Example { #value = await promise; }")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(js* "class Example { #value = async () => await promise; }")')).not.toThrow();
+	});
+
+	it("rejects await in class static blocks", () => {
+		expect(() => compileCljs('(js* "class Example { static { await promise; } }")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+	});
+
 	it("allows top-level js-await after a sync defn", () => {
 		const code = compileCljs("(defn f [] 1)\n(js-await (js/Promise.resolve 2))");
 		expect(code).toContain("return (await Promise.resolve(2))");
@@ -579,8 +731,104 @@ describe("CLJS codemode plugin", () => {
 		expect(code).toContain("return (await 1)");
 	});
 
+	it("reopens async context inside class field and static block initializers", () => {
+		expect(() => compileCljs('(js* "class Example { value = async () => await promise; }")')).not.toThrow();
+		expect(() => compileCljs('(js* "class Example { static { (async () => await promise)(); } }")')).not.toThrow();
+	});
+
+	it("preserves surrounding await context for computed class keys", () => {
+		expect(() => compileCljs('(js* "class Allowed { [await key]() {} }")')).not.toThrow();
+		expect(() => compileCljs('(defn forbidden [] (js* "class Forbidden { [await key]() {} }"))')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+	});
+
 	it("rejects js-await inside a nested sync fn", () => {
 		expect(() => compileCljs("(defn ^:async outer [] ((fn [] (js-await 1))))")).toThrow(AWAIT_IN_SYNC_DEFN_MESSAGE);
+	});
+
+	it("tracks await context for for-await statements", () => {
+		expect(() => compileCljs('(js* "(function () { for await (const value of values) {} })")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(do (js* "for await (const value of values) {}") nil)')).not.toThrow();
+		expect(() => compileCljs('(js* "(async function () { for await (const value of values) {} })")')).not.toThrow();
+	});
+
+	it("rejects sync for-await when comments separate for and await", () => {
+		expect(() => compileCljs('(js* "(function () { for /*comment*/ await (const value of values) {} })")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(js* "(function () { for/*comment*/await (const value of values) {} })")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(js* "(function () { for//comment\\n await (const value of values) {} })")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(do (js* "for /*comment*/ await (const value of values) {}") nil)')).not.toThrow();
+		expect(() =>
+			compileCljs('(js* "(async function () { for /*comment*/ await (const value of values) {} })")'),
+		).not.toThrow();
+	});
+
+	it("compiles backend-valid TypeScript as-expressions", () => {
+		const code = compileCljs('(js* "(1 as Number)")');
+		expect(code).toContain("(1 as Number)");
+	});
+
+	it("compiles a sloppy recoverable construct", () => {
+		const code = compileCljs('(do (js* "with (obj) { x }") nil)');
+		expect(code).toContain("with (obj) { x }");
+	});
+
+	it("does not relabel arbitrary malformed JavaScript as a sync await", () => {
+		for (const source of ['(js* "{{{")', '(js* "function f() { @@@@ }")']) {
+			let message = "";
+			try {
+				compileCljs(source);
+			} catch (error) {
+				message = error instanceof Error ? error.message : String(error);
+			}
+			expect(message.length).toBeGreaterThan(0);
+			expect(message).not.toBe(AWAIT_IN_SYNC_DEFN_MESSAGE);
+		}
+	});
+
+	it("keeps Babel's parse error for malformed top-level for-await", () => {
+		for (const source of [
+			'(do (js* "for await (;;) {}") nil)',
+			'(js* "(async function () { for await (;;) {} })")',
+			'(js* "(function () { for /*comment*/ await (;;) {} })")',
+		]) {
+			let message = "";
+			try {
+				compileCljs(source);
+			} catch (error) {
+				message = error instanceof Error ? error.message : String(error);
+			}
+			expect(message.length).toBeGreaterThan(0);
+			expect(message).not.toBe(AWAIT_IN_SYNC_DEFN_MESSAGE);
+			expect(message).toMatch(/Unexpected token/);
+		}
+	});
+
+	it("tracks await context for await-using declarations", () => {
+		expect(() => compileCljs('(js* "(function () { await using resource = acquire(); })")')).toThrow(
+			AWAIT_IN_SYNC_DEFN_MESSAGE,
+		);
+		expect(() => compileCljs('(do (js* "await using resource = acquire();") nil)')).not.toThrow();
+		expect(() => compileCljs('(js* "(async function () { await using resource = acquire(); })")')).not.toThrow();
+	});
+
+	it("ignores function and await tokens inside regex literals", () => {
+		expect(() => compileCljs('(defn match-token [] #"function(){await}")')).not.toThrow();
+		const controlFlowRegex = compileCljs(`(do (js* "if (true) /from 'clojure.string' function await/.test(\\"x\\")") nil)`);
+		expect(controlFlowRegex).toContain(`if (true) /from 'clojure.string' function await/.test("x")`);
+	});
+
+	it("parses division without mistaking it for a regex literal", () => {
+		const code = compileCljs("(def quotient (/ 8 2))\nquotient");
+		expect(code).toContain("(8) / (2)");
 	});
 
 	it("compiles str/replace without compiler ns-state", () => {
@@ -605,6 +853,7 @@ describe("CLJS codemode plugin", () => {
 		}
 		expect(compileCljs(`(require '["clojure.set" :as set])`)).toContain(`from ${JSON.stringify(import.meta.resolve("squint-cljs/src/squint/set.js"))}`);
 	});
+
 	it("resolves static and dynamic Squint module specifiers", () => {
 		const htmlModule = JSON.stringify(import.meta.resolve("squint-cljs/src/squint/html.js"));
 		const staticImport = compileCljs('#html [:div "Hello"]');
@@ -615,11 +864,28 @@ describe("CLJS codemode plugin", () => {
 		expect(dynamicImport).not.toContain('import("squint-cljs/src/squint/html.js")');
 	});
 
+	it("rewrites re-export module sources", () => {
+		const coreModule = JSON.stringify(import.meta.resolve("squint-cljs/core.js"));
+		const stringModule = JSON.stringify(import.meta.resolve("squint-cljs/src/squint/string.js"));
+		const named = compileCljs(`(do (js* "export { assoc } from 'squint-cljs/core.js'") nil)`);
+		expect(named).toContain(`export { assoc } from ${coreModule}`);
+		expect(named).not.toContain("from 'squint-cljs/core.js'");
+		const star = compileCljs(`(do (js* "export * from 'clojure.string'") nil)`);
+		expect(star).toContain(`export * from ${stringModule}`);
+		expect(star).not.toContain("from 'clojure.string'");
+	});
+
 	it("rewrites quoted do-require imports without touching string literals", () => {
 		const code = compileCljs(`(do (require '["clojure.string" :as str]) (println "import('squint-cljs/src/squint/html.js')"))`);
 		expect(code).toContain(`import * as str from ${JSON.stringify(import.meta.resolve("squint-cljs/src/squint/string.js"))}`);
 		expect(code).not.toMatch(/import \* as str from ['"]clojure\.string['"]/);
 		expect(code).toContain(`println("import('squint-cljs/src/squint/html.js')")`);
+	});
+
+	it("does not rewrite import-like text inside regex literals", () => {
+		const code = compileCljs("#\"from 'clojure.string'\"");
+		expect(code).toContain("return /from 'clojure.string'/");
+		expect(code).not.toContain("return /from \"");
 	});
 
 	it("compiles bare replace to squint_core.replace", () => {

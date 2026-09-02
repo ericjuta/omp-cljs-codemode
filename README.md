@@ -105,7 +105,7 @@ CLJS cells retain the JavaScript codemode helpers: `display`, `read`, `write`, `
 Bare `await` is not that special form. Keep `js-await` in a top-level form, `let`, or `^:async defn`.
 Squint has no `js->clj`; `clj->js` works. Shape JavaScript values into CLJS with `vec`, `aget`, and `js-keys`.
 
-`(pr value)` prints a truncated CLJS-shaped view (sets, lists, functions, circular values) and returns the value. `(js-await (sh "git status --short"))` calls the native bash tool through the host tool proxy (`tool["bash"]`); it is not a subprocess of the JS worker. There is no `js/bash` helper; that form fails with that instruction. There is no `env` helper; that form fails closed without dumping host environment.
+`(pr value)` prints a bounded CLJS-shaped view (sets, lists, functions, circular values), renders promises opaquely, and returns the original value. `(js-await (sh "git status --short"))` calls the native bash tool through the host tool proxy (`tool["bash"]`); it is not a subprocess of the JS worker. Missing tool bridges fail with the same actionable diagnostic whether `tool` is absent or lacks `bash`. There is no `js/bash` helper; that form fails with that instruction. There is no `env` helper; that form fails closed without dumping host environment.
 
 Cells inherit the native JS eval worker's environment (`process.env` / `Bun.env`). Sanitizing that worker env does not cover `sh` or other delegated tools. Do not dump process env from a cell.
 
@@ -124,6 +124,8 @@ The same dynamic lookup works for names that are not valid CLJS identifiers:
 For independent bridged calls, `js/Promise.all` returns a JavaScript array. Use `vec`, `aget`, or an indexed `(range (.-length results))`; `array-seq` is not supported.
 
 Tool bridge calls preserve the native tool's permissions and side effects. The eval-local `(js-await (js/read path))` helper returns raw regular-file text, does not expand `~`, and cannot read directories. Bridged `tool.read` returns the normal OMP tool response shape and follows the live host schema. Neither replaces a directly exposed host `read` tool.
+
+Squint reader and compiler failures are normalized when the upstream message is otherwise opaque. Common diagnostics include unmatched delimiters, malformed `defn`/`fn` forms, odd `cond` forms, and invalid binding vectors.
 
 ## Boundary: project-local CLJS namespaces
 

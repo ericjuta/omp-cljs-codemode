@@ -1,3 +1,4 @@
+import { parse } from "@babel/parser";
 import { compileStringEx, type CompileStringExResult } from "squint-cljs";
 
 type Language = "cljs";
@@ -53,6 +54,7 @@ export const MISSING_BASH_MESSAGE =
 
 const PRELUDE = `const CLJS_PRINT_LENGTH = 32;
 const CLJS_PRINT_DEPTH = 4;
+const cljs$$nodeUtilTypesIsPromise = process.getBuiltinModule("node:util").types.isPromise;
 function cljsTake(value, limit) {
 	const xs = [];
 	if (Array.isArray(value) && value.constructor === Array) {
@@ -94,6 +96,7 @@ function cljsPrint(value, depth, seen) {
 	if (seen.has(value)) return "#circular";
 	seen.add(value);
 	try {
+		if (cljs$$nodeUtilTypesIsPromise(value)) return "#js/Promise";
 		const ctor = value.constructor && value.constructor.name;
 		if (ctor === "Atom") {
 			return "#atom " + cljsPrint(value.val, depth - 1, seen);
@@ -155,7 +158,7 @@ function pr(...values) {
 	return values.length <= 1 ? values[0] : values[values.length - 1];
 }
 async function sh(cmd) {
-	if (!tool) {
+	if (typeof tool === "undefined" || !tool) {
 		throw new Error(${JSON.stringify(MISSING_BASH_MESSAGE)});
 	}
 	const call = tool["bash"];
@@ -213,6 +216,12 @@ function rewriteCompileError(message: string): string {
 	}
 	if (message === "Parameter declaration missing") {
 		return "CLJS compile error: defn/fn needs a parameter vector, as in (defn foo [x] x).";
+	}
+	if (message.includes("cond requires an even number of forms")) {
+		return "CLJS compile error: cond requires an even number of forms (test/expression pairs).";
+	}
+	if (message.startsWith("Unsupported binding form:")) {
+		return `CLJS compile error: ${message}. Check the binding vector syntax.`;
 	}
 	if (message.includes("is not ISeqable")) {
 		return `CLJS compile error: ${message}. Expected a vector or sequential form (let bindings, require spec).`;
@@ -274,59 +283,195 @@ function splitLeadingImports(source: string): { header: string; rest: string } {
 	return { header: lines.slice(0, index).join(""), rest: lines.slice(index).join("") };
 }
 
-function hasJsKeywordBefore(javascript: string, index: number, keyword: string): boolean {
-	let end = index;
-	while (end > 0 && /\s/.test(javascript[end - 1] ?? "")) end -= 1;
-	const start = end - keyword.length;
-	return start >= 0 && javascript.slice(start, end) === keyword && !isJsWordChar(javascript[start - 1]);
+type JavaScriptNode = {
+	type: string;
+	start: number;
+	end: number;
+};
+
+type StringModuleSpecifierNode = JavaScriptNode & {
+	type: "Literal";
+	value: string;
+};
+
+type GeneratedJavaScriptAnalysis = {
+	moduleSpecifiers: StringModuleSpecifierNode[];
+};
+
+type BabelParseFailure = SyntaxError & {
+	reasonCode?: string;
+	pos?: number;
+};
+
+const GENERATED_JAVASCRIPT_PARSE_OPTIONS = {
+	sourceType: "module" as const,
+	allowReturnOutsideFunction: true,
+	allowAwaitOutsideFunction: true,
+	allowImportExportEverywhere: true,
+	allowNewTargetOutsideFunction: true,
+	allowSuperOutsideMethod: true,
+	allowUndeclaredExports: true,
+	errorRecovery: true,
+	createImportExpressions: true,
+	plugins: ["typescript", "estree", "explicitResourceManagement"] as [
+		"typescript",
+		"estree",
+		"explicitResourceManagement",
+	],
+};
+
+function isJavaScriptNode(value: unknown): value is JavaScriptNode {
+	if (value === null || typeof value !== "object") return false;
+	const candidate = value as Partial<JavaScriptNode>;
+	return typeof candidate.type === "string" && typeof candidate.start === "number" && typeof candidate.end === "number";
 }
 
-function isModuleSpecifierContext(javascript: string, quoteIndex: number): boolean {
-	let tokenEnd = quoteIndex;
-	while (tokenEnd > 0 && /\s/.test(javascript[tokenEnd - 1] ?? "")) tokenEnd -= 1;
-	if (javascript[tokenEnd - 1] === "(") {
-		return hasJsKeywordBefore(javascript, tokenEnd - 1, "import");
+/**
+ * Whether `await` is allowed inside `node[field]`. Only a function body opens an
+ * async context; parameter defaults, class field values (including private
+ * fields), and static blocks never do, while computed class keys evaluate in
+ * the surrounding context.
+ */
+function childAsyncScope(node: JavaScriptNode, field: string, asyncScope: boolean): boolean {
+	switch (node.type) {
+		case "FunctionDeclaration":
+		case "FunctionExpression":
+		case "ArrowFunctionExpression":
+			return field === "body" && (node as JavaScriptNode & { async: boolean }).async;
+		case "PropertyDefinition":
+		case "ClassProperty":
+		case "ClassPrivateProperty":
+			return field === "key" && asyncScope;
+		case "StaticBlock":
+			return false;
+		default:
+			return asyncScope;
 	}
-	return hasJsKeywordBefore(javascript, tokenEnd, "from") || hasJsKeywordBefore(javascript, tokenEnd, "import");
 }
 
-function rewriteSquintModuleSpecifiers(javascript: string): string {
+function walkGeneratedJavaScript(
+	node: JavaScriptNode,
+	asyncScope: boolean,
+	visit: (node: JavaScriptNode, asyncScope: boolean) => void,
+): void {
+	visit(node, asyncScope);
+	const fields = node as unknown as Record<string, unknown>;
+	for (const key in fields) {
+		if (!Object.hasOwn(fields, key)) continue;
+		const value = fields[key];
+		if (Array.isArray(value)) {
+			const scope = childAsyncScope(node, key, asyncScope);
+			for (const child of value) {
+				if (isJavaScriptNode(child)) walkGeneratedJavaScript(child, scope, visit);
+			}
+		} else if (isJavaScriptNode(value)) {
+			walkGeneratedJavaScript(value, childAsyncScope(node, key, asyncScope), visit);
+		}
+	}
+}
+
+/**
+ * After stripping a fatal `await`, the owning `for` is the ForOfStatement whose
+ * header span covers that token. Trivia between `for` and `await` (comments or
+ * whitespace) stays inside `[node.start, left.start)`.
+ */
+function asyncScopeOfPatchedForOf(program: JavaScriptNode, awaitPos: number): boolean | undefined {
+	let found: boolean | undefined;
+	walkGeneratedJavaScript(program, true, (node, asyncScope) => {
+		if (found !== undefined || node.type !== "ForOfStatement") return;
+		const left = (node as JavaScriptNode & { left?: unknown }).left;
+		if (!isJavaScriptNode(left)) return;
+		if (node.start <= awaitPos && awaitPos + 5 <= left.start) found = asyncScope;
+	});
+	return found;
+}
+
+/**
+ * Babel throws on sync `for await` instead of recovering an Await/ForOf node.
+ * Relabel only when the patched `for` is a ForOfStatement in a non-async scope.
+ * Malformed `for await` (including `for await (;;)`) keeps Babel's parse error.
+ */
+function isFatalSyncForAwait(error: unknown, javascript: string): error is BabelParseFailure {
+	if (!(error instanceof SyntaxError)) return false;
+	const failure = error as BabelParseFailure;
+	if (failure.reasonCode !== "UnexpectedToken" || typeof failure.pos !== "number") return false;
+	if (!javascript.startsWith("await", failure.pos)) return false;
+	const patched = `${javascript.slice(0, failure.pos)}     ${javascript.slice(failure.pos + 5)}`;
+	let program: JavaScriptNode;
+	try {
+		program = parse(patched, GENERATED_JAVASCRIPT_PARSE_OPTIONS).program as JavaScriptNode;
+	} catch {
+		return false;
+	}
+	return asyncScopeOfPatchedForOf(program, failure.pos) === false;
+}
+
+function moduleSpecifierNode(node: JavaScriptNode): StringModuleSpecifierNode | undefined {
+	if (
+		node.type !== "ImportDeclaration" &&
+		node.type !== "ImportExpression" &&
+		node.type !== "ExportNamedDeclaration" &&
+		node.type !== "ExportAllDeclaration"
+	) {
+		return undefined;
+	}
+	const source = (node as JavaScriptNode & { source: unknown }).source;
+	if (!isJavaScriptNode(source) || source.type !== "Literal") return undefined;
+	const literal = source as JavaScriptNode & { type: "Literal"; value?: unknown };
+	return typeof literal.value === "string" ? (literal as StringModuleSpecifierNode) : undefined;
+}
+
+function traverseGeneratedJavaScript(
+	node: JavaScriptNode,
+	asyncScope: boolean,
+	analysis: GeneratedJavaScriptAnalysis,
+): void {
+	walkGeneratedJavaScript(node, asyncScope, (current, scope) => {
+		const containsAwaitSyntax =
+			current.type === "AwaitExpression" ||
+			(current.type === "ForOfStatement" && (current as JavaScriptNode & { await: boolean }).await) ||
+			(current.type === "VariableDeclaration" && (current as JavaScriptNode & { kind: string }).kind === "await using");
+		if (containsAwaitSyntax && !scope) {
+			throw new Error(AWAIT_IN_SYNC_DEFN_MESSAGE);
+		}
+		const specifier = moduleSpecifierNode(current);
+		if (specifier !== undefined) analysis.moduleSpecifiers.push(specifier);
+	});
+}
+
+function analyzeGeneratedJavaScript(javascript: string): GeneratedJavaScriptAnalysis {
+	let program: JavaScriptNode;
+	try {
+		program = parse(javascript, GENERATED_JAVASCRIPT_PARSE_OPTIONS).program as JavaScriptNode;
+	} catch (error) {
+		if (isFatalSyncForAwait(error, javascript)) {
+			throw new Error(AWAIT_IN_SYNC_DEFN_MESSAGE);
+		}
+		throw error;
+	}
+	const analysis: GeneratedJavaScriptAnalysis = { moduleSpecifiers: [] };
+	traverseGeneratedJavaScript(program, true, analysis);
+	analysis.moduleSpecifiers.sort((left, right) => left.start - right.start);
+	return analysis;
+}
+
+function rewriteSquintModuleSpecifiers(
+	javascript: string,
+	moduleSpecifiers: readonly StringModuleSpecifierNode[],
+): string {
 	let rewritten = "";
 	let copiedThrough = 0;
-	let index = 0;
-	while (index < javascript.length) {
-		if (javascript[index] === "/" && javascript[index + 1] === "/") {
-			index = skipJsLineComment(javascript, index);
-			continue;
-		}
-		if (javascript[index] === "/" && javascript[index + 1] === "*") {
-			index = skipJsBlockComment(javascript, index);
-			continue;
-		}
-		const quote = javascript[index];
-		if (quote !== "'" && quote !== "\"" && quote !== "`") {
-			index += 1;
-			continue;
-		}
-		const end = skipJsString(javascript, index);
-		if (
-			quote !== "`" &&
-			javascript[end - 1] === quote &&
-			isModuleSpecifierContext(javascript, index)
-		) {
-			const specifier = javascript.slice(index + 1, end - 1);
-			const target = specifier.startsWith(SQUINT_PACKAGE_PREFIX)
-				? specifier
-				: Object.hasOwn(SQUINT_NAMESPACE_IMPORTS, specifier)
-					? SQUINT_NAMESPACE_IMPORTS[specifier as keyof typeof SQUINT_NAMESPACE_IMPORTS]
-					: undefined;
-			if (target !== undefined) {
-				rewritten += javascript.slice(copiedThrough, index);
-				rewritten += JSON.stringify(import.meta.resolve(target));
-				copiedThrough = end;
-			}
-		}
-		index = end;
+	for (const node of moduleSpecifiers) {
+		const specifier = node.value;
+		const target = specifier.startsWith(SQUINT_PACKAGE_PREFIX)
+			? specifier
+			: Object.hasOwn(SQUINT_NAMESPACE_IMPORTS, specifier)
+				? SQUINT_NAMESPACE_IMPORTS[specifier as keyof typeof SQUINT_NAMESPACE_IMPORTS]
+				: undefined;
+		if (target === undefined) continue;
+		rewritten += javascript.slice(copiedThrough, node.start);
+		rewritten += JSON.stringify(import.meta.resolve(target));
+		copiedThrough = node.end;
 	}
 	return copiedThrough === 0 ? javascript : rewritten + javascript.slice(copiedThrough);
 }
@@ -341,108 +486,13 @@ function rewriteSquintImports(compiled: CompileStringExResult): string {
 	if (original !== compiled.javascript) {
 		throw new Error("Squint compiler returned an unsupported output layout");
 	}
-	return rewriteSquintModuleSpecifiers(original);
+	const analysis = analyzeGeneratedJavaScript(original);
+	return rewriteSquintModuleSpecifiers(original, analysis.moduleSpecifiers);
 }
 
 function injectPrelude(javascript: string): string {
 	const { header, rest } = splitLeadingImports(javascript);
 	return `${header}${PRELUDE}${rest}`;
-}
-
-function skipJsString(javascript: string, start: number): number {
-	const quote = javascript[start];
-	let index = start + 1;
-	while (index < javascript.length) {
-		const char = javascript[index];
-		if (char === "\\") {
-			index += 2;
-			continue;
-		}
-		if (char === quote) return index + 1;
-		index += 1;
-	}
-	return javascript.length;
-}
-
-function skipJsLineComment(javascript: string, start: number): number {
-	const end = javascript.indexOf("\n", start);
-	return end < 0 ? javascript.length : end + 1;
-}
-
-function skipJsBlockComment(javascript: string, start: number): number {
-	const end = javascript.indexOf("*/", start + 2);
-	return end < 0 ? javascript.length : end + 2;
-}
-
-function nextJsCodeIndex(javascript: string, start: number): number {
-	const char = javascript[start];
-	if (char === "'" || char === "\"" || char === "`") return skipJsString(javascript, start);
-	if (char === "/" && javascript[start + 1] === "/") return skipJsLineComment(javascript, start);
-	if (char === "/" && javascript[start + 1] === "*") return skipJsBlockComment(javascript, start);
-	return start;
-}
-
-function isJsWordChar(char: string | undefined): boolean {
-	return char !== undefined && /[A-Za-z0-9_$]/.test(char);
-}
-
-function findMatchingBrace(javascript: string, openIndex: number): number {
-	let depth = 0;
-	let index = openIndex;
-	while (index < javascript.length) {
-		const skipped = nextJsCodeIndex(javascript, index);
-		if (skipped !== index) {
-			index = skipped;
-			continue;
-		}
-		const char = javascript[index];
-		if (char === "{") depth += 1;
-		else if (char === "}") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-		index += 1;
-	}
-	return -1;
-}
-
-function isAsyncFunctionKeyword(javascript: string, functionIndex: number): boolean {
-	let index = functionIndex;
-	while (index > 0 && /\s/.test(javascript[index - 1] ?? "")) index -= 1;
-	return index >= 5 && javascript.slice(index - 5, index) === "async" && !isJsWordChar(javascript[index - 6]);
-}
-
-function assertAwaitScope(javascript: string, start: number, end: number, asyncScope: boolean): void {
-	let index = start;
-	while (index < end) {
-		const skipped = nextJsCodeIndex(javascript, index);
-		if (skipped !== index) {
-			index = skipped;
-			continue;
-		}
-		if (javascript.startsWith("function", index) && !isJsWordChar(javascript[index - 1]) && !isJsWordChar(javascript[index + 8])) {
-			const headerEnd = javascript.indexOf("{", index + 8);
-			if (headerEnd < 0 || headerEnd >= end) return;
-			const bodyEnd = findMatchingBrace(javascript, headerEnd);
-			if (bodyEnd < 0 || bodyEnd > end) return;
-			assertAwaitScope(javascript, headerEnd + 1, bodyEnd, isAsyncFunctionKeyword(javascript, index));
-			index = bodyEnd + 1;
-			continue;
-		}
-		if (
-			javascript.startsWith("await", index) &&
-			!isJsWordChar(javascript[index - 1]) &&
-			!isJsWordChar(javascript[index + 5]) &&
-			!asyncScope
-		) {
-			throw new Error(AWAIT_IN_SYNC_DEFN_MESSAGE);
-		}
-		index += 1;
-	}
-}
-
-function assertNoAwaitInSyncFn(javascript: string): void {
-	assertAwaitScope(javascript, 0, javascript.length, true);
 }
 
 function compileString(source: string): CompileStringExResult {
@@ -466,7 +516,6 @@ function compileString(source: string): CompileStringExResult {
 export function compileCljs(source: string): string {
 	const compiled = compileString(source);
 	const rewritten = rewriteSquintImports(compiled);
-	assertNoAwaitInSyncFn(rewritten);
 	return injectPrelude(rewritten);
 }
 
