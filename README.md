@@ -164,6 +164,8 @@ Sealed holdouts are skipped by default. Run them deliberately:
 bun run eval:guidance --model provider/model --include-holdouts
 ```
 
+A recorded baseline pins every case prompt, execution setting, grading rule, holdout flag, and the complete case inventory. The `caseContractSha256` and `suiteContractSha256` digests reject changes before any model runs. A changed expected regex, call-count window, exposed tool, deadline, or case list therefore cannot appear as a behavior regression. Older baselines still load, but the runner warns that it cannot verify grading drift.
+
 Record a baseline for a given checkout against the exact current case prompts with `--extension` and `--record-baseline`, which always includes holdouts:
 
 ```sh
@@ -173,7 +175,7 @@ bun run eval:guidance --model provider/model \
   --output evals/baseline-v0.1.17.json
 ```
 
-Recorded baselines persist each prompt and its SHA-256 digest. Normal comparisons fail closed before model execution when the model, run-case IDs, prompt text, or prompt hashes differ; extra baseline entries for skipped holdouts are tolerated. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads the selected checkout explicitly with only the tools that case exposes. Optional result files contain only sanitized eval arguments/results, prompt hashes, final response text, process status, timing, and deterministic grades; reasoning, encrypted provider content, raw JSONL, and stderr are not retained. `evals/results/` is ignored by Git.
+Schema-v4 comparisons reject model, suite contract, prompt, or case contract mismatches before model execution. Schema-v3 baselines retain subset compatibility but print an unverified-grading warning. Every case has its own wall-clock limit, runs with `--no-session` in a disposable fixture directory, and loads only the tools that case exposes. Direct-surface cases load a fixture-hosted adapter from a private temporary directory and import the selected checkout through an `extension-entry.ts` file symlink. Code-mode cases load the checkout entry itself. The runner does not write beside the extension. Optional result files contain only sanitized eval arguments and results, prompt hashes, final response text, process status, timing, and deterministic grades. They never retain reasoning, encrypted provider content, raw JSONL, or stderr. `evals/results/` is ignored by Git.
 
 ## Update and rollback
 

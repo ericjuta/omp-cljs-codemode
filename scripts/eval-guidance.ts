@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const ROOT = resolve(import.meta.dir, "..");
 const EVALS_ROOT = join(ROOT, "evals");
@@ -13,6 +12,8 @@ const PACKAGE_NAME = "@ericjuta/omp-cljs-codemode";
 const MAX_CASE_TIME_MS = 120_000;
 const MAX_JSONL_LINE_CHARS = 2_000_000;
 const FIXTURE_PATH_PROBE_ROOT = "/omp-cljs-guidance-fixture";
+const EXTENSION_ENTRY_LINK = "extension-entry.ts";
+const DIRECT_SURFACE_ADAPTER_NAME = "direct-surface-extension.generated.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -76,6 +77,7 @@ type BaselineCase = {
 	editVariant?: "replace";
 	prompt: string;
 	promptSha256: string;
+	caseContractSha256?: string;
 	finalText: string;
 	passed: boolean;
 	evalCallCount: number;
@@ -84,9 +86,10 @@ type BaselineCase = {
 };
 
 type Baseline = {
-	schemaVersion: 3;
+	schemaVersion: 3 | 4;
 	version: string;
 	model: string;
+	suiteContractSha256?: string;
 	cases: BaselineCase[];
 };
 
@@ -125,6 +128,7 @@ type CaseResult = {
 	kind: GuidanceCaseKind;
 	surface: GuidanceSurface;
 	promptSha256: string;
+	caseContractSha256: string;
 	holdout: boolean;
 	toolNames: string[];
 	evalCalls: SanitizedEvalCall[];
@@ -156,6 +160,48 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Binds every field that decides how a case runs and how its outcome is graded.
+ * Baselines already pin prompts, so without this digest a rubric edit - a
+ * tightened expected regex, a narrower call-count window, a shorter deadline -
+ * reappears as a model regression or improvement in the comparison output.
+ */
+function caseContractSha256(testCase: GuidanceCase): string {
+	const contract = {
+		kind: testCase.kind,
+		surface: testCase.surface,
+		holdout: testCase.holdout,
+		editVariant: testCase.editVariant ?? null,
+		maxTimeMs: testCase.maxTimeMs,
+		expectedLanguage: testCase.expectedLanguage,
+		expectedFinalRegex: testCase.expectedFinalRegex,
+		exposedTools: testCase.exposedTools,
+		allowedTools: testCase.allowedTools,
+		maxEvalErrors: testCase.maxEvalErrors,
+		evalCallCount: testCase.evalCallCount,
+		fixtureFiles: testCase.fixtureFiles ?? null,
+		expectedFixtureFiles: testCase.expectedFixtureFiles ?? null,
+		...(testCase.kind === "mechanical"
+			? {
+					expectedEvalResultRegexes: testCase.expectedEvalResultRegexes,
+					expectedEvalCodeRegexes: testCase.expectedEvalCodeRegexes,
+					expectedReset: testCase.expectedReset,
+				}
+			: {
+					requiredEvalCodeRegexes: testCase.requiredEvalCodeRegexes,
+					forbiddenEvalCodeRegexes: testCase.forbiddenEvalCodeRegexes,
+				}),
+	};
+	return sha256(JSON.stringify(contract));
+}
+
+function suiteContractSha256(testCases: GuidanceCase[]): string {
+	const contracts = testCases
+		.map(testCase => ({ id: testCase.id, contract: caseContractSha256(testCase) }))
+		.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+	return sha256(JSON.stringify(contracts));
 }
 
 function requireText(record: JsonRecord, key: string, context: string): string {
@@ -357,7 +403,7 @@ function parseSuite(value: unknown): GuidanceSuite {
 function parseBaseline(value: unknown): Baseline {
 	if (!isRecord(value)) throw new Error("baseline must be an object");
 	const schemaVersion = requireInteger(value, "schemaVersion", "baseline");
-	if (schemaVersion !== 3) throw new Error("baseline.schemaVersion must be 3");
+	if (schemaVersion !== 3 && schemaVersion !== 4) throw new Error("baseline.schemaVersion must be 3 or 4");
 	if (!Array.isArray(value.cases) || value.cases.length === 0) {
 		throw new Error("baseline must contain at least one case");
 	}
@@ -376,6 +422,10 @@ function parseBaseline(value: unknown): Baseline {
 		if (sha256(prompt) !== promptSha256) {
 			throw new Error(`${context}.promptSha256 does not match ${context}.prompt`);
 		}
+		const caseContract = schemaVersion >= 4 ? requireString(entry, "caseContractSha256", context) : undefined;
+		if (caseContract !== undefined && !/^[0-9a-f]{64}$/u.test(caseContract)) {
+			throw new Error(`${context}.caseContractSha256 must be a lowercase SHA-256 digest`);
+		}
 		return {
 			id,
 			kind: requireCaseKind(entry, "kind", context),
@@ -383,6 +433,7 @@ function parseBaseline(value: unknown): Baseline {
 			editVariant: requireEditVariant(entry, "editVariant", context),
 			prompt,
 			promptSha256,
+			caseContractSha256: caseContract,
 			finalText: requireText(entry, "finalText", context),
 			passed: requireBoolean(entry, "passed", context),
 			evalCallCount: requireInteger(entry, "evalCallCount", context),
@@ -390,10 +441,15 @@ function parseBaseline(value: unknown): Baseline {
 			toolNames: requireStringArray(entry, "toolNames", context, false),
 		};
 	});
+	const suiteContract = schemaVersion >= 4 ? requireString(value, "suiteContractSha256", "baseline") : undefined;
+	if (suiteContract !== undefined && !/^[0-9a-f]{64}$/u.test(suiteContract)) {
+		throw new Error("baseline.suiteContractSha256 must be a lowercase SHA-256 digest");
+	}
 	return {
 		schemaVersion,
 		version: requireString(value, "version", "baseline"),
 		model: requireString(value, "model", "baseline"),
+		suiteContractSha256: suiteContract,
 		cases,
 	};
 }
@@ -649,15 +705,61 @@ async function collectJsonl(stream: ReadableStream<Uint8Array>, collector: Colle
 	}
 }
 
-async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+/**
+ * Discards stderr text - it can contain provider internals - while still
+ * reporting whether OMP refused to load the extension. Without that signal a
+ * failed load looks like a guidance regression: the model simply calls the
+ * native eval tool instead.
+ */
+async function drainStderr(stream: ReadableStream<Uint8Array>, selectedExtensionPath: string): Promise<boolean> {
+	const prefix = `Failed to load extension ${selectedExtensionPath}:`;
+	const overlap = prefix.length - 1;
 	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let carry = "";
+	let atLineStart = true;
+	let loadFailed = false;
+	const consider = (piece: string): void => {
+		if (loadFailed || piece.length === 0) return;
+		const text = carry + piece;
+		loadFailed = (atLineStart && text.startsWith(prefix)) || text.includes(`\n${prefix}`);
+		if (loadFailed) {
+			carry = "";
+			return;
+		}
+		const lastNl = text.lastIndexOf("\n");
+		if (lastNl === -1) {
+			if (atLineStart && text.length <= overlap) {
+				carry = text;
+				return;
+			}
+			carry = overlap > 0 ? text.slice(-overlap) : "";
+			atLineStart = false;
+			return;
+		}
+		const line = text.slice(lastNl + 1);
+		if (line.length <= overlap) {
+			carry = line;
+			atLineStart = true;
+			return;
+		}
+		carry = overlap > 0 ? line.slice(-overlap) : "";
+		atLineStart = false;
+	};
 	try {
-		while (!(await reader.read()).done) {
-			// Deliberately discard stderr; it can contain provider internals.
+		for (;;) {
+			const { value, done } = await reader.read();
+			if (done) {
+				consider(decoder.decode());
+				break;
+			}
+			if (loadFailed) continue;
+			consider(decoder.decode(value, { stream: true }));
 		}
 	} finally {
 		reader.releaseLock();
 	}
+	return loadFailed;
 }
 
 function sanitizeCalls(collector: Collector): SanitizedEvalCall[] {
@@ -739,25 +841,38 @@ function gradeCase(
 	return { passed: failures.length === 0, failures, calls };
 }
 
+/**
+ * Direct-surface cases load a fixture-hosted adapter that strips Code Mode
+ * hooks. After fixtureFiles land, mkdtemp creates an unpredictable private
+ * subdirectory inside the case fixture for the adapter and a file symlink
+ * named `extension-entry.ts`. User fixture names cannot collide. The adapter
+ * keeps the fixed relative import, so relative files and bare package lookup
+ * still resolve from the real extension path without writing there. Parent
+ * fixture cleanup remains the only cleanup.
+ */
 async function writeDirectSurfaceAdapter(fixture: string, extensionPath: string): Promise<string> {
-	const adapterPath = join(fixture, "direct-surface-extension.ts");
-	const extensionUrl = pathToFileURL(extensionPath).href;
+	const adapterDir = await mkdtemp(join(fixture, "omp-cljs-adapter-"));
+	const linkPath = join(adapterDir, EXTENSION_ENTRY_LINK);
+	await symlink(extensionPath, linkPath);
+	const adapterPath = join(adapterDir, DIRECT_SURFACE_ADAPTER_NAME);
 	await Bun.write(
 		adapterPath,
-		`import extension from ${JSON.stringify(extensionUrl)};
+		`import extension from ${JSON.stringify("./extension-entry.ts")};
 
 export default function directSurfaceExtension(api: Record<string | symbol, unknown>): unknown {
 	const directApi = new Proxy(api, {
 		get(target, property, receiver) {
+			const value = Reflect.get(target, property, receiver);
 			if (property !== "registerTool") {
-				const value = Reflect.get(target, property, receiver);
 				return typeof value === "function" ? value.bind(target) : value;
 			}
+			if (typeof value !== "function") throw new Error("extension API registerTool is not callable");
 			return (tool: Record<string, unknown>) => {
 				const clone = Object.create(Object.getPrototypeOf(tool), Object.getOwnPropertyDescriptors(tool));
 				delete clone.codeModeActivation;
 				delete clone.setCodeModeBridge;
-				return (target.registerTool as (definition: Record<string, unknown>) => unknown)(clone);
+				delete clone.supportsCodeModeTransport;
+				return Reflect.apply(value, target, [clone]);
 			};
 		},
 	});
@@ -844,10 +959,11 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 				void terminateAndReap().catch(() => {});
 			}, testCase.maxTimeMs);
 			const stdoutPromise = collectJsonl(child.stdout, collector);
-			const stderrPromise = drain(child.stderr);
+			const stderrPromise = drainStderr(child.stderr, selectedExtensionPath);
 			try {
-				const [status] = await Promise.all([child.exited, stdoutPromise, stderrPromise]);
+				const [status, , extensionLoadFailed] = await Promise.all([child.exited, stdoutPromise, stderrPromise]);
 				exitStatus = status;
+				if (extensionLoadFailed) runtimeFailures.push("omp refused to load the extension under test");
 			} catch (error) {
 				runtimeFailures.push(`omp stream or process failure: ${error instanceof Error ? error.message : String(error)}`);
 				try {
@@ -894,6 +1010,7 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 			kind: testCase.kind,
 			surface: testCase.surface,
 			promptSha256: sha256(testCase.prompt),
+			caseContractSha256: caseContractSha256(testCase),
 			holdout: testCase.holdout,
 			toolNames,
 			evalCalls: grade.calls,
@@ -912,12 +1029,24 @@ async function runCase(testCase: GuidanceCase, model: string, extensionPath: str
 	}
 }
 
-function assertBaselineCompatible(baseline: Baseline, testCases: GuidanceCase[], model: string): void {
+/**
+ * Validates the whole suite, not just the cases about to run: deleting a case or
+ * sealing it as a holdout shrinks the compared population, which moves aggregate
+ * pass counts without touching a single graded field.
+ */
+function assertBaselineCompatible(baseline: Baseline, suiteCases: GuidanceCase[], model: string): void {
 	if (baseline.model !== model) {
 		throw new Error(`baseline model mismatch: expected ${baseline.model}, current model is ${model}`);
 	}
+	if (
+		baseline.suiteContractSha256 !== undefined &&
+		baseline.suiteContractSha256 !== suiteContractSha256(suiteCases)
+	) {
+		throw new Error("baseline suite-contract drift");
+	}
 	const baselineById = new Map(baseline.cases.map(entry => [entry.id, entry]));
-	for (const testCase of testCases) {
+	const unboundContracts: string[] = [];
+	for (const testCase of suiteCases) {
 		const entry = baselineById.get(testCase.id);
 		if (!entry) throw new Error(`run case missing from baseline: ${testCase.id}`);
 		if (entry.surface !== testCase.surface) throw new Error(`baseline surface drift for case ${testCase.id}`);
@@ -925,15 +1054,26 @@ function assertBaselineCompatible(baseline: Baseline, testCases: GuidanceCase[],
 		if (entry.prompt !== testCase.prompt || entry.promptSha256 !== sha256(testCase.prompt)) {
 			throw new Error(`baseline prompt/hash drift for case ${testCase.id}`);
 		}
+		if (entry.caseContractSha256 === undefined) {
+			unboundContracts.push(testCase.id);
+		} else if (entry.caseContractSha256 !== caseContractSha256(testCase)) {
+			throw new Error(`baseline case-contract drift for case ${testCase.id}`);
+		}
+	}
+	if (unboundContracts.length > 0) {
+		console.log(
+			`warning: baseline v${baseline.version} predates case-contract binding; grading drift is unverified for ${unboundContracts.length} case(s)`,
+		);
 	}
 }
 
 function buildRecordedBaseline(version: string, model: string, testCases: GuidanceCase[], results: CaseResult[]): Baseline {
 	const byId = new Map(results.map(result => [result.id, result]));
 	return {
-		schemaVersion: 3,
+		schemaVersion: 4,
 		version,
 		model,
+		suiteContractSha256: suiteContractSha256(testCases),
 		cases: testCases.map(testCase => {
 			const result = byId.get(testCase.id);
 			if (!result) throw new Error(`missing result for case ${testCase.id}`);
@@ -944,6 +1084,7 @@ function buildRecordedBaseline(version: string, model: string, testCases: Guidan
 				editVariant: testCase.editVariant,
 				prompt: testCase.prompt,
 				promptSha256: result.promptSha256,
+				caseContractSha256: caseContractSha256(testCase),
 				finalText: result.finalResponse,
 				passed: result.passed,
 				evalCallCount: result.evalCallCount,
@@ -1008,7 +1149,7 @@ async function main(): Promise<void> {
 	const baseline = options.recordBaselineVersion === undefined
 		? await readJson(options.baselinePath).then(parseBaseline)
 		: undefined;
-	if (baseline) assertBaselineCompatible(baseline, runCases, model);
+	if (baseline) assertBaselineCompatible(baseline, suite.cases, model);
 	const results: CaseResult[] = [];
 	console.log(`model ${model}; suite ${suite.suite}; running ${runCases.length}/${suite.cases.length}`);
 	for (const testCase of skippedHoldouts) {
@@ -1049,7 +1190,7 @@ async function main(): Promise<void> {
 		if (options.outputPath) {
 			await mkdir(dirname(options.outputPath), { recursive: true });
 			const artifact = {
-				schemaVersion: 3,
+				schemaVersion: 4,
 				suite: suite.suite,
 				model,
 				baseline: { version: baseline.version, model: baseline.model, overlap: baselineOverlap },
